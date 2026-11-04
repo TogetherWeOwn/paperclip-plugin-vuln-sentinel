@@ -197,11 +197,9 @@ describe("exact-inventory retained Dependabot context", () => {
     raw.packages["node_modules/lib"] = { version, resolved: `https://registry.npmjs.org/lib/-/lib-${version}.tgz` };
     lockfiles.files[0]!.content = JSON.stringify(raw);
     const result = await context.bind(await ready(rehash(lockfiles)), await retain());
-    if (version.includes("+")) {
-      // The inventory parser already holds build-metadata versions; no tuple leaks through.
-      expect(result.alerts[0]!.attention).toContain("dependabot_inventory_file_attention");
-      expect(result.alerts[0]!.tuples).toEqual([]);
-    } else expect(result.alerts[0]!.tuples[0]!.rangeMatch).toBe("unknown");
+    expect(result.alerts[0]!.tuples).toMatchObject([{ dependency: { version }, rangeMatch: "unknown" }]);
+    expect(result.alerts[0]!.attention).toContain("dependabot_range_context_unknown");
+    expect(result.alerts[0]!.attention).not.toContain("dependabot_inventory_file_attention");
     expect(result.alerts[0]!.status).toBe("attention");
   });
 

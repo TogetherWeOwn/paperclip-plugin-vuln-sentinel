@@ -208,6 +208,45 @@ describe("npm lockfile entries", () => {
   });
 });
 
+describe("canonical locked versions", () => {
+  function locked(path: string, v: string) {
+    if (path === "Cargo.lock") return `version = 4\n${cargoPackage("lib", v)}`;
+    if (path === "pnpm-lock.yaml") return `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      lib:\n        specifier: ^1.0.0\n        version: ${JSON.stringify(v)}\npackages:\n  ${JSON.stringify(`lib@${v}`)}:\n    resolution: {integrity: sha512-abc=}\nsnapshots:\n  ${JSON.stringify(`lib@${v}`)}: {}\n`;
+    return npm({ "node_modules/lib": npmRow("lib", v), "node_modules/other": npmRow("other") });
+  }
+
+  describe.each(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "Cargo.lock"])("%s", path => {
+    it.each(["1.2.3+vendor.1", "1.2.3+001", "1.2.3+Vendor-ABC.01", "1.2.3-beta.1+build.01"])("preserves canonical %s without dropping the file", v => {
+      const result = parseFile(path, locked(path, v));
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies.find(dep => dep.package === "lib")).toMatchObject({ version: v, scope: "unknown", direct: null });
+      if (path.endsWith(".json")) expect(result.dependencies.find(dep => dep.package === "other")).toBeDefined();
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+      expect(parseFile(path, locked(path, v))).toEqual(result);
+    });
+
+    it.each(["v1.2.3+build", " 1.2.3+build", "1.2.3+build ", "01.2.3+build", "1.2.3-01+build", "1.2.3+", "1.2.3+a..b", "1.2.3+a+b", "1.2.3+a_b"])("holds noncanonical or invalid %s", v => {
+      const result = expectAttention(path, locked(path, v), "unsupported_package_version");
+      expect(result.dependencies).toEqual([]);
+    });
+  });
+
+  it("keeps equal-precedence build identities and all their locations separate", () => {
+    const result = parseNpm({
+      "node_modules/lib": npmRow("lib", "1.2.3"),
+      "node_modules/a/node_modules/lib": npmRow("lib", "1.2.3+one"),
+      "node_modules/b/node_modules/lib": npmRow("lib", "1.2.3+two"),
+      "node_modules/c/node_modules/lib": npmRow("lib", "1.2.3+one"),
+    });
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies.map(dep => dep.version).sort()).toEqual(["1.2.3", "1.2.3+one", "1.2.3+two"]);
+    expect(result.dependencies.find(dep => dep.version === "1.2.3+one")!.locations.map(row => row.locator)).toEqual([
+      "node_modules/a/node_modules/lib", "node_modules/c/node_modules/lib",
+    ]);
+  });
+});
+
 describe("pnpm v9 entries", () => {
   it("parses every registry tuple with scopes, aliases and peer suffixes", () => {
     const result = parseFile("pnpm-lock.yaml", pnpm);

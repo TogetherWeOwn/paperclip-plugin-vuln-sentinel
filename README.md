@@ -709,6 +709,12 @@ installed location and locked version. npm aliases require the real package name
 and matching official registry tarball identity; pnpm retains scoped/peer-version
 entries and checks importer/snapshot references. Cargo keeps the full registry
 locked set, never substitutes native R for locked L and never drops O = L − R.
+Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
+query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
+`1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
+query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
+still require attention. Parser `0.1.1` and semver `7.7.4` are recorded in provenance.
+This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 Local/workspace links, Git/custom sources, missing entries, unsupported formats and
 versions, malformed/duplicate keys, ambiguous versions and unverified registry
@@ -746,9 +752,14 @@ replay idempotent. Lost responses can be replayed without overwriting old eviden
 readback verifies the hash and parent source binding. Records are bounded at 16 MiB
 each, with no eviction. The eventual enabled runtime must add retention/capacity
 health and enforce source selection fences in downstream decision/publication
-writes, retaining the immutable references. A future parser-version change needs an explicit
-historical-inventory migration/replay strategy; readback never silently replaces
-stored coverage with new parser semantics.
+writes, retaining the immutable references. Parser upgrades fail closed on historical
+inventory/version mismatch: old records and source selections are never rewritten
+or silently reinterpreted. Explicitly recording the same retained bytes with parser
+`0.1.1` appends a distinct content-derived inventory/snapshot ID; old references remain
+held, and an old OSV observation with stripped build metadata cannot satisfy new
+exact-tuple coverage. No automatic migration, current-source promotion, historical
+recovery or live reacquisition is enabled. An installed runtime upgrade still needs
+a separately verified migration/replay and source-selection plan.
 
 ### Fenced source selection, before downstream runtime integration
 

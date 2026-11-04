@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PGlite } from "@electric-sql/pglite";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -34,7 +35,7 @@ describe("immutable source journal", () => {
     const recorded = await journal.recordOsv("company", lockfileId, sourceOsv());
     expect(recorded.inputs).toHaveLength(1);
     expect(recorded.inputs[0]!.provenance).toMatchObject({
-      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.0" },
+      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.1", semver: "7.7.4" },
     });
     const saved = (await journal.readOsv("company", recorded.snapshotId))!;
     expect(saved.scan.osv).toEqual(sourceOsv());
@@ -42,6 +43,50 @@ describe("immutable source journal", () => {
     expect(await journal.readLockfiles("other-company", lockfileId)).toBeNull();
     expect(await journal.readOsv("other-company", recorded.snapshotId)).toBeNull();
     expect(await journal.readOsv("company", lockfileId)).toBeNull();
+  });
+
+  it("retains complete build-version query identity through concurrent OSV replay", async () => {
+    const lockfiles = sourceLockfiles();
+    const file = lockfiles.files[0]!;
+    file.content = file.content.replaceAll("1.2.3", "1.2.3+build.01");
+    file.sha256 = sha256(file.content);
+    file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
+    lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
+    const id = await journal.recordLockfiles("company", lockfiles);
+    const osv = sourceOsv();
+    // An otherwise equal base version is not exact inventory query coverage.
+    await expect(journal.recordOsv("company", id, osv)).rejects.toThrow("osv_inventory_coverage_mismatch");
+    osv.observations[0]!.dependency.version = "1.2.3+build.01";
+    const scans = await Promise.all(Array.from({ length: 5 }, () => journal.recordOsv("company", id, rehash(osv))));
+    expect(new Set(scans.map(row => row.snapshotId)).size).toBe(1);
+    const stored = (await journal.readOsv("company", scans[0]!.snapshotId))!;
+    expect(stored.inputs).toEqual(scans[0]!.inputs);
+    expect(stored.inputs[0]!.version).toBe("1.2.3+build.01");
+    expect(stored.inventory.dependencies[0]!.version).toBe("1.2.3+build.01");
+    expect(stored.inputs[0]!.compatibleFixVerified).toBe(false);
+    expect(stored.inputs[0]!.fixedVersion).toBeNull();
+    expect(stored.inventory.coverage.runtimeCompleteness).toBe("not_proven");
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(2);
+  });
+
+  it("holds historical parser drift without rewriting evidence and appends a distinct current inventory", async () => {
+    const lockfiles = sourceLockfiles();
+    const id = await journal.recordLockfiles("company", lockfiles);
+    const legacy = structuredClone((await journal.readLockfiles("company", id))!);
+    legacy.inventory.toolVersions = { "vuln-sentinel-inventory": "0.1.0", yaml: "2.9.1", "smol-toml": "1.9.1" };
+    const { inventorySha256: _, ...payload } = legacy.inventory;
+    legacy.inventory.inventorySha256 = sha256(canonicalJson(payload));
+    const legacyId = sha256(canonicalJson(["source-snapshot-v1", "lockfiles", legacy]));
+    await postgres.query(`INSERT INTO ${DATABASE_NAMESPACE}.source_snapshots
+      (company_id, snapshot_id, source_kind, repo, source_sha, bundle) VALUES ($1, $2, 'lockfiles', $3, $4, $5)`,
+    ["company", legacyId, lockfiles.repo, lockfiles.sourceSha, canonicalJson(legacy)]);
+    await expect(journal.readLockfiles("company", legacyId)).rejects.toThrow("stored_inventory_mismatch");
+    await expect(journal.recordOsv("company", legacyId, sourceOsv())).rejects.toThrow("stored_inventory_mismatch");
+    expect(await journal.recordLockfiles("company", lockfiles)).toBe(id);
+    expect(id).not.toBe(legacyId);
+    const retained = await postgres.query<{ bundle: unknown }>(`SELECT bundle FROM ${DATABASE_NAMESPACE}.source_snapshots WHERE snapshot_id = $1`, [legacyId]);
+    expect(retained.rows[0]!.bundle).toEqual(legacy);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(2);
   });
 
   it("concurrent replay inserts one immutable record of each kind", async () => {

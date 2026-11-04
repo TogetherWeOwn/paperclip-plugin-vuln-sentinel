@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { valid } from "semver";
+import { parse } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { isScalar, parseDocument, visit } from "yaml";
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.0", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.1", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -52,7 +52,10 @@ function entries(value: unknown, code: string): Array<[string, unknown]> {
 }
 
 function version(value: unknown): string {
-  if (typeof value !== "string" || value.length > 256 || valid(value) !== value) {
+  if (typeof value !== "string" || value.length > 256) throw new SourceAttention("unsupported_package_version");
+  const parsed = parse(value);
+  // semver.valid strips build metadata; query/tuple identity must preserve the complete locked version.
+  if (!parsed || value !== parsed.version + (parsed.build.length ? `+${parsed.build.join(".")}` : "")) {
     throw new SourceAttention("unsupported_package_version");
   }
   return value;
