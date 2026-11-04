@@ -720,7 +720,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.6` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.7` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 npm installation locators require an exact `node_modules` path segment, not a
@@ -743,6 +743,18 @@ file's partial positives even when a matching installed target exists. This chec
 shape only: empty, tag, alias, local and other string specifiers are not evaluated
 for installed-version satisfaction or source/owner association here. The separate
 manifest/root-context observers retain their own conservative range limitations.
+
+pnpm importer dependency entries require both a declared `specifier` (a string of
+at most 256 characters without ASCII controls) and a resolved `version` reference.
+Importer and snapshot resolved references retain their 1,024-character limit and
+also reject ASCII controls before local-reference handling or snapshot lookup.
+Malformed shapes discard that file's partial positives even when the referenced
+snapshot exists or the value starts with `link:`/`file:`. Bounded specifier strings
+are not evaluated for satisfaction: tags, aliases and local/workspace declarations
+remain shape-only observations, and valid local references still require attention.
+Scoped names, peer suffixes and alias targets retain their existing identities.
+No owner edge, scope, full closure, compatibility or available-release proof is
+inferred from these declaration/reference checks.
 
 Cargo dependency lists are checked against that same lockfile's complete package
 row table, including local and non-registry rows. Supported references are an exact
@@ -794,7 +806,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.6` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.7` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs

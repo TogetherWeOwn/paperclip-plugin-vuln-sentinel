@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.6", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.7", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -186,8 +186,16 @@ function readPnpm(content: string, add: Add, issues: Set<string>): number {
       if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
       for (const [name, value] of refs) {
         npmName(name);
-        const ref = importer ? object(value, "invalid_pnpm_importer_dependency").version : value;
-        if (typeof ref !== "string" || ref.length > 1024) throw new SourceAttention("invalid_pnpm_reference");
+        let ref = value;
+        if (importer) {
+          const declaration = object(value, "invalid_pnpm_importer_dependency");
+          if (typeof declaration.specifier !== "string" || declaration.specifier.length > 256
+            || /[\u0000-\u001f\u007f]/u.test(declaration.specifier)) throw new SourceAttention("invalid_pnpm_specifier");
+          ref = declaration.version;
+        }
+        if (typeof ref !== "string" || ref.length > 1024 || /[\u0000-\u001f\u007f]/u.test(ref)) {
+          throw new SourceAttention("invalid_pnpm_reference");
+        }
         if (ref.startsWith("link:") || ref.startsWith("file:")) { issues.add("local_or_workspace_package"); continue; }
         const key = `${name}@${ref}`;
         // Alias references may carry the real package name in the resolved value.

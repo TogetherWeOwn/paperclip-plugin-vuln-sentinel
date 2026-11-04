@@ -424,6 +424,81 @@ describe("pnpm v9 entries", () => {
     expect(result.dependencies.map(dep => `${dep.package}@${dep.version}`).sort()).toEqual(["@scope/lib@2.0.0", "lib@1.2.3"]);
   });
 
+  function withReference(value: unknown, kind: string, owner = ".", importer = true) {
+    return JSON.stringify({ lockfileVersion: "9.0",
+      importers: { [owner]: importer ? { [kind]: { lib: value } } : {} },
+      packages: { "lib@1.2.3": { resolution: { integrity: "sha512-abc=" } } },
+      snapshots: { "lib@1.2.3": importer ? {} : { [kind]: { lib: value } } },
+    });
+  }
+
+  it.each(["dependencies", "devDependencies", "optionalDependencies"])("holds malformed importer %s specifiers even when the resolved snapshot exists", kind => {
+    for (const specifier of [undefined, null, true, 1, [], {}, "x".repeat(257), "^1.0.0\n", "\u0000", "\u007f"]) {
+      for (const owner of [".", "packages/app"]) {
+        const input = snapshot({ "pnpm-lock.yaml": withReference({ specifier, version: "1.2.3" }, kind, owner) });
+        const before = structuredClone(input);
+        const result = parseLockfileInventory(input);
+        expect(result.files[0]!.issues).toContain("invalid_pnpm_specifier");
+        expect(result.coverage.configuredPathsParsed).toBe(false);
+        expect(result.dependencies).toEqual([]);
+        expect(input).toEqual(before);
+        expect(parseLockfileInventory(input)).toEqual(result);
+      }
+    }
+  });
+
+  it.each(["dependencies", "devDependencies", "optionalDependencies"])("retains bounded importer %s specifiers as shape only", kind => {
+    for (const specifier of ["", "*", "^1.0.0", "latest", "npm:lib@^1.0.0", "workspace:*", "file:../lib", "git+https://example.com/lib.git", "雪", "x".repeat(256)]) {
+      const result = parseFile("pnpm-lock.yaml", withReference({ specifier, version: "1.2.3" }, kind));
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies[0]).toMatchObject({ package: "lib", version: "1.2.3", scope: "unknown", direct: null });
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+    }
+  });
+
+  it.each(["dependencies", "devDependencies", "optionalDependencies"])("validates importer %s declarations before holding local references", kind => {
+    for (const version of ["link:../local", "file:../local"]) {
+      const malformed = expectAttention("pnpm-lock.yaml", withReference({ specifier: false, version }, kind), "invalid_pnpm_specifier");
+      expect(malformed.dependencies).toEqual([]);
+      const local = expectAttention("pnpm-lock.yaml", withReference({ specifier: "workspace:*", version }, kind), "local_or_workspace_package");
+      expect(local.dependencies[0]).toMatchObject({ package: "lib", scope: "unknown", direct: null });
+    }
+  });
+
+  describe.each([true, false])("importer=%s resolved-reference shapes", importer => {
+    it.each(["dependencies", "devDependencies", "optionalDependencies"])("rejects malformed %s references before local/snapshot lookup", kind => {
+      for (const ref of [...(importer ? [undefined] : []), null, true, 1, [], {}, "x".repeat(1025), "1.2.3\n", "link:../local\u0000", "file:../local\u007f"]) {
+        const value = importer ? { specifier: "*", version: ref } : ref;
+        const result = expectAttention("pnpm-lock.yaml", withReference(value, kind, ".", importer), "invalid_pnpm_reference");
+        expect(result.dependencies).toEqual([]);
+      }
+    });
+  });
+
+  it("checks the reference length boundary without changing peer-context identity", () => {
+    for (const length of [1024, 1025]) {
+      const ref = `1.2.3(${"x".repeat(length - 7)})`;
+      expect(ref).toHaveLength(length);
+      const content = JSON.parse(withReference({ specifier: "*", version: ref }, "dependencies"));
+      content.snapshots = { [`lib@${ref}`]: {} };
+      const result = parseFile("pnpm-lock.yaml", JSON.stringify(content));
+      expect(result.coverage.configuredPathsParsed).toBe(length === 1024);
+      if (length === 1024) expect(result.dependencies[0]).toMatchObject({ package: "lib", version: "1.2.3", scope: "unknown", direct: null });
+      else expect(result.files[0]!.issues).toContain("invalid_pnpm_reference");
+    }
+  });
+
+  it("discards malformed pnpm declaration positives but retains another file's inventory", () => {
+    const result = parseLockfileInventory(snapshot({
+      "pnpm-lock.yaml": withReference({ specifier: null, version: "1.2.3" }, "dependencies"),
+      "other/package-lock.json": npm({ "node_modules/other": npmRow("other") }),
+    }));
+    expect(result.files.find(file => file.path === "pnpm-lock.yaml")!.issues).toEqual(["invalid_pnpm_specifier"]);
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+  });
+
   it("accepts a genuinely empty importer without claiming repository completeness", () => {
     const result = parseFile("pnpm-lock.yaml", "lockfileVersion: '9.0'\nimporters:\n  .: {}\n");
     expect(result.dependencies).toEqual([]);
