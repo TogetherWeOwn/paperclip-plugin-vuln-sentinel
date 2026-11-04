@@ -179,6 +179,33 @@ This pure offline helper makes no network/DB/issue calls and changes no records,
 pins, claims, schema, SQL writers or runtime integration. No scanner runs or pilot
 acceptance are implied by reading already-preserved reports.
 
+`observeRustScanner` additionally checks the reported scanner configuration and
+expected binary metadata, reusing all inventory/hash checks above. Caller-supplied
+expected tool versions, absolute binary path and optional binary SHA-256 are only
+consistency expectations, not authenticated pins. The supported report shape must
+request native Cargo/file catalogers, report their use and SHA-256 file hashing, and
+use squashed-image scope. Explicit fixed/unfixed-only, exclusion and VEX filtering
+is rejected. Missing required Grype filter fields are rejected, not defaulted.
+
+Every native crate must identify that one binary path/access path and layer, with
+matching crate metadata. Exactly one corresponding regular, nonempty ELF file with
+an entrypoint and SHA-256 digest is required. Duplicate files/digests, other layers,
+symlinks, unsupported metadata and capacity errors hold the observation. Other
+image files are not treated as Rust inventory or proof of full image coverage.
+No binary bytes are opened, hashed or executed by this helper. Even a digest that
+matches the caller's expectation is not independent binary/provenance verification.
+
+Configuration hashes and the count of reported Grype ignore rules are retained.
+Ignore rules are **not** assumed harmless, including scanner defaults targeting
+other package types. Any such rules require independent policy review. A missing
+`ignoredMatches` field is explicitly `not_observed`, never zero suppressions;
+an explicit empty array is only `reported_empty`. Neither case proves an unfiltered
+scan. Outputs always remain `attention`, unauthenticated, resolution-ineligible and
+`scannerPolicy: not_proven`, retaining the inventory's existing evidence gaps.
+Reported configuration is not execution/exit-status proof, toolchain verification,
+a current vulnerability database, deployment binding or runtime completeness. This
+adds no trusted receipt, policy input, runtime endpoint or publication authority.
+
 ## Development
 
 Node 24 or later:

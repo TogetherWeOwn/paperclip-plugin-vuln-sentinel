@@ -1,7 +1,7 @@
 import { valid } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { parseDocument } from "yaml";
-import { sha256 } from "./identity.js";
+import { canonicalJson, sha256 } from "./identity.js";
 import { object, SourceAttention, text } from "./source-http.js";
 
 export interface CrateTuple { name: string; version: string }
@@ -31,6 +31,27 @@ export interface RustInventoryObservation {
   grypeMatches: number;
   reportSha256: { check: string; syft: string; grype: string; cargoLock: string | null };
   toolVersions: { syft: string; grype: string };
+  reasons: string[];
+}
+
+export interface RustScannerReports extends RustInventoryReports {
+  scannerExpected: {
+    binaryPath: string;
+    binarySha256?: string;
+    toolVersions: { syft: string; grype: string };
+  };
+}
+
+export interface RustScannerObservation {
+  status: "attention";
+  authenticated: false;
+  resolutionEligible: false;
+  scannerPolicy: "not_proven";
+  inventory: RustInventoryObservation;
+  binary: { path: string; layerId: string; sha256: string; digestComparison: "matched" | "not_observed" };
+  configurationSha256: { syft: string; grype: string };
+  grypeIgnoreRules: number;
+  suppressionAccounting: "reported_empty" | "not_observed";
   reasons: string[];
 }
 
@@ -90,6 +111,84 @@ function digest(value: unknown, prefixed = false): string {
 function source(value: unknown, imageId: string, configId: string): void {
   const metadata = object(value, "missing_native_image_source");
   if (metadata.userInput !== imageId || metadata.imageID !== configId) reject("native_image_binding_mismatch");
+}
+
+/** Reported configuration and binary consistency only; no scanner is run or authenticated. */
+export function observeRustScanner(input: RustScannerReports): RustScannerObservation {
+  const inventory = observeRustInventory(input);
+  const syft = report(input.syft);
+  const grype = report(input.grype);
+  const expected = input.scannerExpected;
+  const binaryPath = text(expected.binaryPath, "invalid_native_binary_path", 1024);
+  if (!/^(?:\/[A-Za-z0-9._-]+)+$/u.test(binaryPath)
+    || binaryPath.split("/").some(part => part === "." || part === "..")) reject("invalid_native_binary_path");
+  if (inventory.toolVersions.syft !== expected.toolVersions.syft
+    || inventory.toolVersions.grype !== expected.toolVersions.grype) reject("native_tool_expectation_mismatch");
+
+  const syftConfig = object(object(syft.descriptor, "missing_native_tool").configuration, "missing_native_configuration");
+  const grypeConfig = object(object(grype.descriptor, "missing_native_tool").configuration, "missing_native_configuration");
+  const catalogers = object(syftConfig.catalogers, "missing_native_catalogers");
+  const requested = object(catalogers.requested, "missing_native_catalogers");
+  const used = rows(catalogers.used);
+  const required = ["cargo-auditable-binary-cataloger", "file-content-cataloger", "file-digest-cataloger",
+    "file-executable-cataloger", "file-metadata-cataloger"];
+  if (canonicalJson(requested) !== canonicalJson({ default: ["cargo-auditable-binary-cataloger", "file"] })
+    || used.length !== required.length || new Set(used).size !== used.length
+    || required.some(name => !used.includes(name))) reject("unsupported_native_catalogers");
+  if (object(syftConfig.search, "missing_native_scope").scope !== "squashed"
+    || object(grypeConfig.search, "missing_native_scope").scope !== "squashed") reject("unsupported_native_scope");
+  const fileConfig = object(syftConfig.files, "missing_native_file_configuration");
+  if (!rows(fileConfig.hashers).includes("sha-256")) reject("missing_native_sha256_hasher");
+  if ((syftConfig.exclude !== undefined && rows(syftConfig.exclude).length)
+    || grypeConfig["only-fixed"] !== false || grypeConfig["only-notfixed"] !== false
+    || grypeConfig["ignore-wontfix"] !== "" || rows(grypeConfig.exclude).length
+    || rows(grypeConfig["vex-documents"]).length || rows(grypeConfig["vex-add"]).length) {
+    reject("filtered_native_configuration");
+  }
+  const ignore = rows(grypeConfig.ignore);
+  ignore.forEach(rule => object(rule, "invalid_native_ignore_rule"));
+
+  const files = rows(syft.files).map(value => object(value, "invalid_native_file"));
+  const matching = files.filter(file => object(file.location, "invalid_native_file_location").path === binaryPath);
+  if (matching.length !== 1) reject("missing_or_ambiguous_native_binary");
+  const file = matching[0]!;
+  const location = object(file.location, "invalid_native_file_location");
+  const layerId = digest(location.layerID, true);
+  const metadata = object(file.metadata, "missing_native_binary_metadata");
+  const executable = object(file.executable, "missing_native_binary_executable");
+  if (metadata.type !== "RegularFile" || !Number.isSafeInteger(metadata.size) || (metadata.size as number) <= 0
+    || executable.format !== "elf" || executable.hasEntrypoint !== true) reject("unsupported_native_binary");
+  const binaryDigests = rows(file.digests).map(value => object(value, "invalid_native_binary_digest"))
+    .filter(row => row.algorithm === "sha256");
+  if (binaryDigests.length !== 1) reject("missing_or_ambiguous_native_binary_digest");
+  const binaryHash = digest(binaryDigests[0]!.value);
+  if (expected.binarySha256 !== undefined && digest(expected.binarySha256) !== binaryHash) {
+    reject("native_binary_digest_mismatch");
+  }
+  for (const value of rows(syft.artifacts)) {
+    const artifact = object(value, "invalid_native_crate");
+    if (artifact.metadataType !== "rust-cargo-audit-entry") reject("unsupported_native_crate_metadata");
+    const crate = tuple(artifact);
+    if (key(tuple(artifact.metadata)) !== key(crate)) reject("native_crate_metadata_mismatch");
+    const locations = rows(artifact.locations);
+    if (locations.length !== 1) reject("ambiguous_native_crate_location");
+    const found = object(locations[0], "invalid_native_crate_location");
+    if (found.path !== binaryPath || found.accessPath !== binaryPath || found.layerID !== layerId) {
+      reject("native_crate_binary_binding_mismatch");
+    }
+  }
+  const suppressionAccounting = grype.ignoredMatches === undefined ? "not_observed" : "reported_empty";
+  return {
+    status: "attention", authenticated: false, resolutionEligible: false, scannerPolicy: "not_proven", inventory,
+    binary: { path: binaryPath, layerId, sha256: binaryHash,
+      digestComparison: expected.binarySha256 === undefined ? "not_observed" : "matched" },
+    configurationSha256: { syft: sha256(canonicalJson(syftConfig)), grype: sha256(canonicalJson(grypeConfig)) },
+    grypeIgnoreRules: ignore.length, suppressionAccounting,
+    reasons: [...inventory.reasons, "reported_configuration_is_not_execution_proof", "binary_bytes_not_independently_verified",
+      "scanner_policy_not_proven", ...(ignore.length ? ["grype_ignore_rules_require_independent_review"] : []),
+      ...(suppressionAccounting === "not_observed" ? ["grype_suppression_accounting_not_observed"] : []),
+      ...(expected.binarySha256 === undefined ? ["independent_binary_digest_not_observed"] : [])],
+  };
 }
 
 /** Offline consistency only. Never produces RescanEvidence, VEX, policy inputs or a publication permit. */
