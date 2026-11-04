@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CARGO_MANIFEST_VERSION, observeCargoManifest } from "./cargo-manifest.js";
+import { CARGO_MANIFEST_VERSION, cargoDeclarationRange, observeCargoManifest } from "./cargo-manifest.js";
 import type { RepositoryDiscovery, RepositoryTreeEntry } from "./github-discovery.js";
 import { canonicalJson, sha256 } from "./identity.js";
 
@@ -293,6 +293,33 @@ describe("bounded Cargo stable candidate requirement observations", () => {
           `${requirement}: ${tuple.join(".")}`).toBe(expected ? "matches" : "does_not_match");
       }
     }
+  });
+
+  describe.each(["<", "<=", "=", ">=", ">"] as const)("conjunction with %s", leftOperator => {
+    it.each(["<", "<=", "=", ">=", ">"] as const)("intersects %s independently of clause order", rightOperator => {
+      const boundaries = [[0, 0, 0], [0, 2, 3], [1, 0, 0], [1, 2, 3]] as const;
+      const candidates = [...boundaries, [0, 2, 2], [0, 2, 4], [1, 2, 4]];
+      const compare = (a: readonly number[], b: readonly number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
+      const matches = (operator: string, order: number) => {
+        switch (operator) {
+          case "<": return order < 0;
+          case "<=": return order <= 0;
+          case "=": return order === 0;
+          case ">=": return order >= 0;
+          case ">": return order > 0;
+          default: throw new Error("unexpected comparator");
+        }
+      };
+      for (const left of boundaries) for (const right of boundaries) for (const candidate of candidates) {
+        const clauses = [`${leftOperator}${left.join(".")}`, `${rightOperator}${right.join(".")}`];
+        const expected = matches(leftOperator, compare(candidate, left)) && matches(rightOperator, compare(candidate, right));
+        for (const requirement of [clauses.join(", "), [...clauses].reverse().join(", ")]) {
+          expect(cargoDeclarationRange(requirement, candidate.join(".")), `${requirement}: ${candidate.join(".")}`).toEqual({
+            requirementKind: "stable_semver_subset", candidateRangeMatch: expected ? "matches" : "does_not_match",
+          });
+        }
+      }
+    });
   });
 
   it("preserves conflicting package/workspace/target requirements and unreported inheritance independently", () => {
