@@ -196,6 +196,11 @@ describe("offline exact-tree Cargo manifest/lockfile context", () => {
     expect(result.inventoryCandidates).toEqual([]);
     expect(result.attention).toContain("empty_cargo_declarations_not_absence");
   });
+  it.each(["1979-05-27T07:32:00Z", "1979-05-27T07:32:00", "1979-05-27", "07:32:00"])(
+    "rejects temporal declaration %s before returning partial lockfile comparisons", scalar => {
+      const f = fixture(`[dependencies]\nexample = "1.2.3"\ninvalid = ${scalar}`);
+      expect(() => observe(f)).toThrow("invalid_cargo_manifest_dependency");
+    });
   it("keeps malformed selected-file attention and does not leak positives from another lockfile", () => {
     const result = observe(fixture(undefined, `version = 4\n${crate()}${crate()}`, "Cargo.lock", "Cargo.toml",
       [{ path: "other/Cargo.lock", content: `version = 4\n${crate("example", "1.9.0")}` }]));
@@ -302,7 +307,7 @@ describe("offline exact-tree Cargo manifest/lockfile context", () => {
   });
   it("retains tool provenance and has no rule-6, normalized fix, resolution or publication fields", () => {
     const result = observe();
-    expect(result.toolVersions).toMatchObject({ "vuln-sentinel-cargo-manifest": "1.1.0",
+    expect(result.toolVersions).toMatchObject({ "vuln-sentinel-cargo-manifest": "1.1.1",
       "vuln-sentinel-cargo-lockfile-context": "1.0.0", "vuln-sentinel-inventory": "0.1.13", "smol-toml": "1.9.1", semver: "7.7.4" });
     for (const field of ["fixedVersion", "compatibleFix", "resolutionEligible", "publicationAllowed", "owner"]) expect(Object.hasOwn(result, field)).toBe(false);
     expect(result.attention).toEqual([...result.attention].sort());

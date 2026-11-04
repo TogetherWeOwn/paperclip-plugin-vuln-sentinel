@@ -130,6 +130,27 @@ describe("offline exact-tree Cargo declaration observations", () => {
     });
   it.each(['dependencies = []', 'workspace = []', 'target = []', '[target]\nunix = []', '[target."cfg(unix)"]\ndependencies = 1'])(
     "rejects malformed owner/map %s", content => { expect(() => observe(content)).toThrow(/invalid_cargo_manifest_/u); });
+  describe.each(["1979-05-27T07:32:00Z", "1979-05-27T07:32:00", "1979-05-27", "07:32:00"])("TOML temporal scalar %s is not a table", scalar => {
+    it.each([
+      ["dependencies = SCALAR", "invalid_cargo_manifest_dependency_map"],
+      ["[dependencies]\nx = SCALAR", "invalid_cargo_manifest_dependency"],
+      ["workspace = SCALAR", "invalid_cargo_manifest_workspace"],
+      ["[workspace]\ndependencies = SCALAR", "invalid_cargo_manifest_dependency_map"],
+      ["target = SCALAR", "invalid_cargo_manifest_targets"],
+      ["[target]\nunix = SCALAR", "invalid_cargo_manifest_target_owner"],
+      ["[target.unix]\ndependencies = SCALAR", "invalid_cargo_manifest_dependency_map"],
+    ])("rejects %s without returning empty/partial declarations", (template, code) => {
+      expect(() => observe(template.replace("SCALAR", scalar))).toThrow(code);
+    });
+  });
+  it("keeps ordinary/inline tables and temporal metadata or requirement strings distinct", () => {
+    const content = 'workspace = { dependencies = { shared = "1.2.3" } }\ntarget = { unix = { dependencies = { target_dep = "1.2.3" } } }\n'
+      + '[package]\nreleased = 1979-05-27\n[dependencies]\nx = { version = "1.2.3" }\ny = "1979-05-27"';
+    const result = observe(content);
+    expect(result.declarations.map(row => row.declaredName)).toEqual(["x", "y", "shared", "target_dep"]);
+    expect(result.declarations[1]).toMatchObject({ versionRequirement: "1979-05-27", requirementKind: "unsupported" });
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+  });
   it.each(["", "x".repeat(1025), "bad\nselector"])("rejects unsupported target key %s", target => {
     expect(() => observe(`[target.${JSON.stringify(target)}.dependencies]\nx = "1"`)).toThrow("invalid_cargo_manifest_target");
   });
@@ -316,7 +337,7 @@ describe("bounded Cargo stable candidate requirement observations", () => {
     expect(selected.declarations.map(row => row.candidateRangeMatch)).toEqual(["unknown", null]);
     expect(selected.observationSha256).not.toBe(plain.observationSha256);
     expect(selected.source).toEqual(plain.source);
-    expect(selected.toolVersions).toMatchObject({ "vuln-sentinel-cargo-manifest": "1.1.0", semver: "7.7.4" });
+    expect(selected.toolVersions).toMatchObject({ "vuln-sentinel-cargo-manifest": "1.1.1", semver: "7.7.4" });
     const expected = structuredClone(selected);
     candidate.version = "2.0.0";
     expect(selected).toEqual(expected);

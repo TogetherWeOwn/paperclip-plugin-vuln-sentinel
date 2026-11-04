@@ -5,7 +5,7 @@ import { validateRepositoryDiscovery, type RepositoryDiscovery } from "./github-
 import { canonicalJson, sha256 } from "./identity.js";
 import { object, SourceAttention } from "./source-http.js";
 
-export const CARGO_MANIFEST_VERSION = "1.1.0";
+export const CARGO_MANIFEST_VERSION = "1.1.1";
 const SECTIONS = ["dependencies", "dev-dependencies", "build-dependencies"] as const;
 const SOURCE_FIELDS = ["path", "git", "registry", "registry-index", "branch", "tag", "rev"] as const;
 const NAME = /^[A-Za-z0-9_-]{1,64}$/u;
@@ -46,6 +46,14 @@ export interface CargoManifestObservation {
 
 function text(value: unknown, limit: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= limit && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function table(value: unknown, code: string): Record<string, unknown> {
+  const row = object(value, code);
+  // TOML dates/times are objects too, but cannot stand in for declaration/owner tables.
+  const prototype = Object.getPrototypeOf(row);
+  if (prototype !== null && prototype !== Object.prototype) throw new SourceAttention(code);
+  return row;
 }
 
 function stable(value: unknown): value is string {
@@ -97,7 +105,7 @@ export function observeCargoManifest(
     throw new SourceAttention("cargo_manifest_discovered_blob_mismatch");
   }
   let root: Record<string, unknown>;
-  try { root = object(parseToml(content), "invalid_cargo_manifest"); }
+  try { root = table(parseToml(content), "invalid_cargo_manifest"); }
   catch { throw new SourceAttention("invalid_cargo_manifest_toml"); }
   if (candidate !== undefined && (!candidate || typeof candidate.declaredName !== "string"
     || !NAME.test(candidate.declaredName) || !stable(candidate.version))) {
@@ -115,7 +123,7 @@ export function observeCargoManifest(
   const declarations: CargoManifestObservation["declarations"] = [];
   const read = (owner: CargoManifestObservation["declarations"][number]["owner"], target: string | null,
     section: typeof SECTIONS[number], value: unknown) => {
-    const rows = Object.entries(object(value, "invalid_cargo_manifest_dependency_map"));
+    const rows = Object.entries(table(value, "invalid_cargo_manifest_dependency_map"));
     if (rows.length + declarations.length > 10_000) throw new SourceAttention("cargo_manifest_declaration_capacity");
     for (const [declaredName, value] of rows.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
       if (!NAME.test(declaredName)) throw new SourceAttention("invalid_cargo_manifest_dependency_name");
@@ -128,7 +136,7 @@ export function observeCargoManifest(
         if (!text(value, 256)) throw new SourceAttention("invalid_cargo_manifest_requirement");
         versionRequirement = value;
       } else {
-        const row = object(value, "invalid_cargo_manifest_dependency");
+        const row = table(value, "invalid_cargo_manifest_dependency");
         if (Object.hasOwn(row, "version")) {
           if (!text(row.version, 256)) throw new SourceAttention("invalid_cargo_manifest_requirement");
           versionRequirement = row.version;
@@ -169,16 +177,16 @@ export function observeCargoManifest(
   };
   readSections("package", null, root);
   if (Object.hasOwn(root, "workspace")) {
-    const workspace = object(root.workspace, "invalid_cargo_manifest_workspace");
+    const workspace = table(root.workspace, "invalid_cargo_manifest_workspace");
     if (Object.hasOwn(workspace, "dependencies")) read("workspace", null, "dependencies", workspace.dependencies);
   }
   if (Object.hasOwn(root, "target")) {
     attention.add("cargo_target_selectors_not_evaluated");
-    const targets = Object.entries(object(root.target, "invalid_cargo_manifest_targets"));
+    const targets = Object.entries(table(root.target, "invalid_cargo_manifest_targets"));
     if (targets.length > 10_000) throw new SourceAttention("cargo_manifest_target_capacity");
     for (const [target, value] of targets.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
       if (!text(target, 1024)) throw new SourceAttention("invalid_cargo_manifest_target");
-      readSections("target", target, object(value, "invalid_cargo_manifest_target_owner"));
+      readSections("target", target, table(value, "invalid_cargo_manifest_target_owner"));
     }
   }
   if (!declarations.length) attention.add("empty_cargo_declarations_not_absence");

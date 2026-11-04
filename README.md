@@ -122,8 +122,12 @@ permissive parser or adding another matching engine.
 `observeCargoManifest(discovery, path, content, candidate?)` binds a regular tracked `Cargo.toml`
 to the retained repository commit/tree/discovery, Git blob and any reported UTF-8
 byte size. Invalid/duplicate TOML, mismatched bytes, lossy encoding, symlinks and
-submodules reject. It performs no fetch, Cargo/package-manager/script execution,
-source switching, database write or runtime integration.
+submodules reject. Declaration, dependency-map, workspace and target-owner values
+must be TOML tables: date/time scalars are objects in the parser but reject here,
+never empty tables or partial declaration sets. Temporal metadata in unevaluated fields
+remains unevaluated; quoted date/time requirement strings remain unsupported strings.
+It performs no fetch, Cargo/package-manager/script execution, source switching,
+database write or runtime integration.
 
 Package `dependencies`, `dev-dependencies` and `build-dependencies`, virtual/root
 `workspace.dependencies` and every explicit `target.<selector>` dependency section
@@ -163,7 +167,7 @@ rescan resolution or publication permission is inferred. No matcher/rule-6 input
 Limits: 2 MiB raw content, 10,000 declarations shared across all owners/sections,
 10,000 target owners (including empty ones), 256-character requirements,
 1,024-character target/source hints and 1 MiB output. Limits fail rather than truncate.
-Observer `1.1.0` and existing pinned `smol-toml` `1.9.1` / `semver` `7.7.4` are recorded
+Observer `1.1.1` and existing pinned `smol-toml` `1.9.1` / `semver` `7.7.4` are recorded
 independently of inventory parser provenance; existing stored inventories and prior
 observations are unchanged, with no automatic migration or current-source promotion.
 These pure offline tests are not actual-boundary integration or real-pilot acceptance.
@@ -207,7 +211,7 @@ reference-accounting gaps and empty declarations are never absence or resolution
 Limits include the existing manifest/inventory budgets, 10,000 total comparisons,
 10,000 retained locations and 1 MiB combined output, rejecting rather than truncating.
 
-Context observer `1.0.0`, manifest observer `1.1.0` and existing inventory/parser versions
+Context observer `1.0.0`, manifest observer `1.1.1` and existing inventory/parser versions
 are recorded in the content identity. Historical records and current-source selection
 remain unchanged. Every result stays `attention`, scope unknown, direct null and
 compatible-fix false. No policy/matcher/rule-6 input, release availability, freshness,
