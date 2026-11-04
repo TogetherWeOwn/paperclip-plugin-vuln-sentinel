@@ -174,6 +174,51 @@ canonical content identities, pinned TOML/SemVer parsers and Cargo's published
 [version requirement semantics](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#version-requirement-syntax),
 without introducing another source transport, dependency resolver, authority store or worker.
 
+## Offline exact-tree Cargo manifest/lockfile context
+
+`observeCargoLockfileContext(discovery, snapshot, lockfilePath, manifestPath, manifestContent, candidate?)`
+checks that all retained lockfiles and the explicit regular tracked `Cargo.toml` belong
+to the exact same repository, default branch and commit/tree, with matching Git blobs,
+UTF-8 bytes, sizes and retained content digests. Both paths are required: colocation,
+ancestor paths and a workspace manifest never establish Cargo workspace membership or
+an installed-owner association. No source acquisition or Cargo resolver is invoked.
+
+The result embeds the complete manifest observation and retains every same-spelling
+crates.io inventory version/location from **only the selected Cargo.lock**. Comparison
+rows refer to manifest and inventory indexes within this observation. `nameBasis`
+distinguishes literal `declared_name` equality from an explicit `package_hint`; when
+these spellings differ, both sets remain independently visible. Equal spellings carry
+both bases without double counting. Names are not normalized, aliases are not merged,
+and neither spelling is authenticated registry identity or a dependency-owner edge.
+
+Each comparison reports only the explicit declaration text against that locked version
+using the same bounded stable Cargo requirement evaluator as the manifest observer.
+Missing/inherited requirements, unsupported syntax and prerelease/build-metadata
+locked versions stay `unknown`. Supported matches and mismatches preserve every
+package/workspace/target/section conflict; they never select a version, resolve
+inheritance/features/source overrides or certify all-version compatibility. An optional
+future `{ declaredName, version }` candidate remains independent of these locked-version
+comparisons and cannot rewrite their inventory identities or results.
+
+Malformed selected files contribute their inventory attention and no partial positives;
+independent-file attention remains visible, but no tuples/locations are borrowed from
+another lockfile or ecosystem. Missing name comparisons, unverified source/checksum,
+reference-accounting gaps and empty declarations are never absence or resolution proof.
+Limits include the existing manifest/inventory budgets, 10,000 total comparisons,
+10,000 retained locations and 1 MiB combined output, rejecting rather than truncating.
+
+Context observer `1.0.0`, manifest observer `1.1.0` and existing inventory/parser versions
+are recorded in the content identity. Historical records and current-source selection
+remain unchanged. Every result stays `attention`, scope unknown, direct null and
+compatible-fix false. No policy/matcher/rule-6 input, release availability, freshness,
+closure, trusted receipt, native issue effect, runtime integration or publication is
+established. Pure offline tests are not actual-boundary integration or pilot acceptance;
+publication remains off and host authority/groundwork remain deferred.
+
+REA angle: compose the existing exact-tree manifest and retained inventory protocols,
+reusing the bounded Cargo evaluator rather than inventing a dependency resolver,
+workspace discovery mechanism, authority path or source transport.
+
 ## Offline exact-tree npm manifest observations
 
 `observeNpmManifest(discovery, path, content, candidate?)` checks a regular tracked

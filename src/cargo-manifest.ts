@@ -66,6 +66,15 @@ function requirementRange(requirement: string | null): Range | null {
   try { return new Range(translated.join(" ")); } catch { return null; }
 }
 
+export function cargoDeclarationRange(requirement: string | null, candidateVersion?: string): Pick<
+  CargoManifestObservation["declarations"][number], "requirementKind" | "candidateRangeMatch"
+> {
+  const range = requirementRange(requirement);
+  return { requirementKind: requirement === null ? "not_reported" : range ? "stable_semver_subset" : "unsupported",
+    candidateRangeMatch: candidateVersion === undefined ? null : !range || !stable(candidateVersion) ? "unknown"
+      : satisfies(candidateVersion, range) ? "matches" : "does_not_match" };
+}
+
 /** Exact-tree declaration/range observations only; no Cargo resolver, target evaluation or fix proof. */
 export function observeCargoManifest(
   discovery: RepositoryDiscovery, path: string, content: string, candidate?: CargoManifestCandidate,
@@ -145,11 +154,9 @@ export function observeCargoManifest(
           attention.add("cargo_declaration_without_requirement_or_source");
         }
       }
-      const range = requirementRange(versionRequirement);
-      const requirementKind = versionRequirement === null ? "not_reported" : range ? "stable_semver_subset" : "unsupported";
+      const { requirementKind, candidateRangeMatch } = cargoDeclarationRange(versionRequirement,
+        candidate?.declaredName === declaredName ? candidate.version : undefined);
       if (requirementKind === "unsupported") attention.add("unsupported_cargo_manifest_requirement");
-      const candidateRangeMatch = candidate?.declaredName !== declaredName ? null : !range ? "unknown"
-        : satisfies(candidate.version, range) ? "matches" : "does_not_match";
       declarations.push({ owner, target, section, declaredName, packageHint, versionRequirement,
         requirementKind, candidateRangeMatch, workspaceInherited, sourceHints, unevaluatedFields });
     }

@@ -32,6 +32,8 @@ export { observePnpmImporterContext, PNPM_IMPORTER_CONTEXT_VERSION } from "./pnp
 export type { PnpmImporterContextObservation } from "./pnpm-importer-context.js";
 export { observeNpmRootContext, NPM_ROOT_CONTEXT_VERSION } from "./npm-root-context.js";
 export type { NpmRootContextObservation } from "./npm-root-context.js";
+export { observeCargoLockfileContext, CARGO_LOCKFILE_CONTEXT_VERSION } from "./cargo-lockfile-context.js";
+export type { CargoLockfileContextObservation } from "./cargo-lockfile-context.js";
 export { observeCargoManifest, CARGO_MANIFEST_VERSION } from "./cargo-manifest.js";
 export type { CargoManifestCandidate, CargoManifestObservation } from "./cargo-manifest.js";
 export { observeNpmManifest, NPM_MANIFEST_VERSION } from "./npm-manifest.js";
