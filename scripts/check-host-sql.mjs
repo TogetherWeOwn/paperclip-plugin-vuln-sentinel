@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, DependabotSource, DependabotJournal, SourceDecisions, SourceEffects, SourcePublicationStore, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, DependabotSource, DependabotJournal, SourceDecisions, SourceEffects, SourcePublicationStore, PublicationDiagnostics, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -85,6 +85,11 @@ const db = {
     validatePluginRuntimeQuery(sql, DATABASE_NAMESPACE);
     parameters(sql, params);
     count++;
+    if (sql.includes("AS history_bytes")) return [{ revision: storedPoll.revision, pinned: storedPoll.effect_barrier !== null,
+      history_bytes: Buffer.byteLength(JSON.stringify(storedPoll.effect_history)), history_is_array: true }];
+    if (sql.includes("AS bundle_bytes")) return [{ revision: routingRevision, pinned: routingEffectToken !== null,
+      bundle_bytes: Buffer.byteLength(JSON.stringify(storedRouting)), bundle: storedRouting }];
+    if (sql.includes("card_claims")) return [];
     if (sql.includes("source_snapshots")) return storedSources.has(params[1]) ? [storedSources.get(params[1])] : [];
     if (sql.includes("source_polls")) return storedPoll ? [structuredClone(storedPoll)] : [];
     if (sql.includes("threat_snapshots")) return storedThreats.has(params[1]) ? [storedThreats.get(params[1])] : [];
@@ -240,4 +245,9 @@ if (dependabot.status !== "available") throw new Error("Host-validator Dependabo
 const dependabotJournal = new DependabotJournal(db);
 const dependabotId = await dependabotJournal.record("fixture-company", dependabot.snapshot);
 await dependabotJournal.read("fixture-company", dependabotId);
+const diagnostics = await new PublicationDiagnostics(db, () => new Date("2026-11-04T04:32:00Z")).read("fixture-company", configured.repo);
+if (diagnostics.source.status !== "observed" || !diagnostics.source.pinned || diagnostics.routing.status !== "observed"
+  || diagnostics.claims.status !== "observed" || diagnostics.publication.enabled || diagnostics.publication.supportedMethods.length) {
+  throw new Error("Host-validator fixture did not exercise all read-only diagnostics; publication must remain inadmissible");
+}
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

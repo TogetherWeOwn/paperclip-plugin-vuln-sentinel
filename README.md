@@ -10,6 +10,15 @@ contacts an advisory provider, mutates a repository, or creates live issues just
 by importing this package or running its tests. Explicit read-only source adapters
 accept an injected HTTP transport; all adapter tests use fake responses.
 
+**Publication contract: NOT ADMISSIBLE.** The frozen
+`publication-ownership-map/v1` review of consumer source `5c0f718` and migrations
+001–012 approves **no trusted adapter or method version**. Source, routing, claim,
+link, pin and history records are worker writable. Exact-owner CAS, matching hashes,
+callback proof strings and worker mirrors are not authenticated source or settlement
+authority. Newer source revisions do not inherit compatibility approval. Keep
+publication off; do not connect these library effect/recovery callbacks to a trusted
+adapter. Independent source and local report work may continue.
+
 Implemented:
 
 - Deterministic rule evaluation, mandatory scope/priority post-pass, proposed
@@ -50,9 +59,10 @@ Implemented:
 - Source-fenced local decision-head/routing writes, with same-statement source row
   locking, DB poll-revision ordering and retained source-selection provenance.
   The legacy publication API holds source-selected evidence for attention.
-- Explicit source-pinned publication library integration: exact routing snapshot and
-  rendered payload binding, guarded single-invocation dispatch, deadline revocation,
-  and audit-bound routing cleanup after independently verified settlement.
+- Fixture-only source-pinned publication library integration: exact routing snapshot
+  and rendered payload binding, guarded single-invocation dispatch, deadline revocation
+  and exact-owner cleanup machinery. This is not an admissible authority boundary;
+  worker-written history and callback proofs do not supply an independent host audit.
 - Explicit retained OSV/feed→source-fenced decision/routing orchestration, with exact
   parent references, current and historical freshness checks, and coverage attention.
 - Same-action all-version reduction for identical non-version context, retaining
@@ -71,6 +81,41 @@ configuration, live rescan receipt verification, manifest/jobs and weekly job sc
 managed triage project, health/counters, operator runbook and installation, and two
 real consecutive report-only scans. No worker is wired to the explicit publication
 API; no weekly batch or per-finding issue has been emitted on a live host.
+
+## Read-only publication diagnostics
+
+`PublicationDiagnostics.read(companyId, repo)` accepts only the namespace query
+interface. It observes source/routing pin **presence**, row revisions, source-history
+shape/size and mapped claim-state/attempt counts, without returning tokens, raw proof
+history, issue IDs or stored error text. It never calls an issue transport, mutates a
+record, releases either pin, invokes a verifier or retries an uncertain claim.
+
+The report always returns `attention`, `enabled: false`, `not_admissible` and an empty
+supported-method set. These are static library limitations, **not** authenticated
+installed-host capability discovery or a registration endpoint. Missing, corrupt,
+over-capacity or unavailable observations never become successful absence. Routing
+bundles over 1 MiB are withheld in SQL; malformed or duplicate container identities
+prevent claim enumeration. Claim reads are bounded to the exact company's mapped
+container origins. Claims have no repository column: orphan, legacy and unmapped claims
+are deliberately **not** covered. Empty counts cannot certify zero repository claims,
+settlement or permission for a create. Each count describes stored worker state only,
+not independently verified effect accounting or successful enabled-pilot stage counts.
+
+Reads are not an atomic snapshot; concurrent changes can make observations disagree.
+Even two absent pins, a linked claim or worker-written CLOSED/settlement history cannot
+prove cleanup completion or permit successor acquisition. Exceptions are sanitized and
+not retried. These diagnostics do not validate applicability/current-source freshness,
+establish runtime safety, start a pilot timestamp or enable a health endpoint/job.
+
+Before any future trusted integration, fixed host operations need independently
+protected source/routing/claim ownership, full immutable original binding, all-attempt
+admission and permanent closure accounting, later authenticated CLOSED-membership
+verification, one unique host audit **before** exact-owner cleanup, and a completion
+gate barring successors until both canonical and consumer pins are cleaned. Unknown
+outcomes retain both pins and claim uncertainty. Never import/take over/refresh an
+uncertain claim, connect empty-lookup recovery or issue a second create. The existing
+exact-owner CAS is reusable cleanup machinery only; implementing a new authority map
+requires explicit compatibility review, not a callback or worker mirror.
 
 ## Development
 
@@ -855,11 +900,16 @@ Unknown sends, lost outcomes and incomplete crash recovery retain the pins; ther
 is no automatic ambiguous-create retry. Existing in-memory RPC/handler tracking
 and cooperative drain are reusable hooks, not durable settlement certificates.
 
-No installed verifier, worker or callback endpoint is supplied here. Execution
-references must come from the trusted host integration, never raw caller JSON.
-The issue transport must not retry mutations and all runtime publication must use
-this pinned path, not the legacy fixture path. Interleaved PGlite/fake-transport
-regressions are not pooled-host, authenticated cross-HTTP or pilot evidence.
+No installed verifier, worker or callback endpoint is supplied here. The frozen
+ownership review rejects this pinned library path as a runtime authority boundary:
+generic namespace SQL can bypass its guards, and the stored source/routing/claim
+versions and cleanup history are worker writable. Do not wire either publication
+path or its callback proofs to a trusted adapter. A future fixed host boundary must
+admit every issue attempt and every alternate writer, preserve full original binding,
+and support independent later verification/audit-before-cleanup. Execution references
+cannot come from raw caller JSON. No transport may retry ambiguous mutations.
+Interleaved PGlite/fake-transport regressions are not pooled-host, authenticated
+cross-HTTP or pilot evidence.
 
 ## Creation safety and reconciliation
 
@@ -889,14 +939,16 @@ cancellation:** a submitted host request can still commit later. Thirty minutes
 is an attention/reconciliation threshold, never permission to steal a claim.
 Replay/restart therefore cannot initiate a second create for an ambiguous attempt.
 
-`reconcile` may relink an issue definitively found by exact lookup. An empty lookup,
-worker termination, or a person clicking retry is insufficient to permit another
-attempt. The optional recovery verifier is an integration boundary: it must
-independently verify both terminal execution and settled outstanding host effects,
-with an audit reference bound to the previous token. No runtime endpoint exposes
-this capability. Without both receipts, delivery remains `delivery_unknown`.
-Recovery audit entries and claim tombstones are retained; no automatic expiry or
-delete resets the guard.
+The legacy `reconcile` fixture path can relink an issue found by lookup, and has an
+optional callback-based empty-lookup recovery branch. **Neither is an approved trusted
+adapter recovery path.** Do not connect the empty-lookup branch, import/take over/refresh
+uncertain claims or infer settlement from a visible issue. No automatic second create
+is permitted. Worker termination, age, RPC timeout or a retry click proves nothing about
+late effects. A future host-authorized repair can restore only the exact known committed
+issue/link after independent later CLOSED-membership verification and durable audit;
+otherwise preserve uncertainty and both pins. No runtime endpoint exposes recovery.
+Library recovery history/tombstones are retained but worker writable, not authority;
+no automatic expiry or delete resets the guard.
 
 This is **at-most-once create-attempt safety for conforming writers**, not
 unconditional exactly-once/eventual issue creation. It intentionally sacrifices

@@ -36,6 +36,8 @@ export { ContainerPublication } from "./publication.js";
 export type { RescanEvidence, ResolutionRecord } from "./rescan.js";
 export type { PublicationResult, SourcePublicationResult } from "./publication.js";
 export { SourcePublicationStore } from "./source-publication.js";
+export { PublicationDiagnostics } from "./publication-diagnostics.js";
+export type { PublicationDiagnosticResult } from "./publication-diagnostics.js";
 export { DeliveryRouting, WEEKLY_ORIGIN_KIND, utcWeekStart, weeklyOrigin } from "./routing.js";
 export type { RoutingSnapshot, RoutingMember, RoutingContainer, RoutingResult, RemediationRelationship } from "./routing.js";
 export type { StoredDecision } from "./journal.js";
