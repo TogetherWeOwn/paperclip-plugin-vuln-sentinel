@@ -4,7 +4,7 @@ import { osvVersionStatus, type OsvAffected } from "./ranges.js";
 import { object, SourceAttention, sourceBudget, text, timestamp, type SourceFetch } from "./source-http.js";
 
 const BASE = "https://api.osv.dev/v1";
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 const ECOSYSTEMS: Ecosystem[] = ["npm", "crates.io", "Go", "PyPI"];
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/u;
 
@@ -26,6 +26,8 @@ export interface OsvSnapshot {
   snapshotSha256: string;
   observations: Array<{ dependency: OsvDependency; advisoryIds: string[] }>;
   records: OsvRecord[];
+  /** Referenced IDs returning 404, not proof of withdrawal or range exclusion. */
+  unavailableIds: string[];
 }
 
 function id(value: unknown): string {
@@ -166,12 +168,22 @@ export class OsvSource {
       chunk.forEach((dep, index) => observations.push({ dependency: dep, advisoryIds: [...found[index]!].sort() }));
     }
     const records: OsvRecord[] = [];
+    const unavailableIds: string[] = [];
+    const pending = [...revisions.keys()].sort();
+    const discovered = new Set(pending);
     let snapshotBytes = Buffer.byteLength(canonicalJson(observations));
-    for (const [advisoryId, modified] of [...revisions.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) {
+    for (let index = 0; index < pending.length; index++) {
+      const advisoryId = pending[index]!;
       const response = await request(`${BASE}/vulns/${encodeURIComponent(advisoryId)}`, { method: "GET" });
+      if (response.status === 404 && !revisions.has(advisoryId)) {
+        unavailableIds.push(advisoryId);
+        continue;
+      }
       if (response.status !== 200) throw new SourceAttention(`osv_detail_http_${response.status}`);
       const record = parseOsvRecord(response.body, advisoryId);
-      if (record.modified !== modified) throw new SourceAttention("advisory_changed_during_query");
+      if (revisions.has(advisoryId) && record.modified !== revisions.get(advisoryId)) {
+        throw new SourceAttention("advisory_changed_during_query");
+      }
       if (Date.parse(record.modified!) > Date.parse(queriedAt)
         || record.withdrawn !== null && Date.parse(record.withdrawn) > Date.parse(queriedAt)) {
         throw new SourceAttention("future_advisory_revision");
@@ -179,10 +191,71 @@ export class OsvSource {
       snapshotBytes += Buffer.byteLength(canonicalJson(record));
       if (snapshotBytes > 8 * 1024 * 1024) throw new SourceAttention("snapshot_capacity");
       records.push(record);
+      for (const linked of [...record.aliases, ...record.upstream].sort()) {
+        if (discovered.has(linked)) continue;
+        discovered.add(linked);
+        if (discovered.size > 2_000) throw new SourceAttention("alias_capacity");
+        pending.push(linked);
+      }
     }
-    const snapshot = { queriedAt, observations, records };
+    records.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const snapshot = { queriedAt, observations, records, unavailableIds: unavailableIds.sort() };
+    if (Buffer.byteLength(canonicalJson(snapshot)) > 8 * 1024 * 1024) throw new SourceAttention("snapshot_capacity");
     return { ...snapshot, snapshotSha256: sha256(canonicalJson(snapshot)) };
   }
+}
+
+/** Replay checks include the raw records and every discovered edge, not just a content hash. */
+export function validateOsvSnapshot(snapshot: OsvSnapshot): void {
+  timestamp(snapshot.queriedAt, "invalid_query_time");
+  const { snapshotSha256, ...content } = snapshot;
+  const serialized = canonicalJson(content);
+  if (Buffer.byteLength(serialized) > 8 * 1024 * 1024) throw new SourceAttention("snapshot_capacity");
+  if (sha256(serialized) !== snapshotSha256) throw new SourceAttention("snapshot_hash_mismatch");
+  const records = array(snapshot.records, "invalid_osv_snapshot", 2_000) as OsvRecord[];
+  const unavailable = ids(snapshot.unavailableIds);
+  if (!Array.isArray(snapshot.unavailableIds) || unavailable.length !== snapshot.unavailableIds.length) {
+    throw new SourceAttention("invalid_unavailable_ids");
+  }
+  const known = new Set(unavailable);
+  for (const record of records) {
+    if (known.has(record.id)) throw new SourceAttention("duplicate_osv_record");
+    known.add(record.id);
+    if (canonicalJson(parseOsvRecord(record.raw, record.id)) !== canonicalJson(record)) {
+      throw new SourceAttention("osv_raw_record_mismatch");
+    }
+    if (Date.parse(record.modified!) > Date.parse(snapshot.queriedAt)
+      || record.withdrawn !== null && Date.parse(record.withdrawn) > Date.parse(snapshot.queriedAt)) {
+      throw new SourceAttention("future_osv_record");
+    }
+  }
+  if (known.size > 2_000) throw new SourceAttention("alias_capacity");
+  const referenced = new Set<string>();
+  for (const record of records) {
+    for (const linked of [...record.aliases, ...record.upstream]) {
+      referenced.add(linked);
+      if (!known.has(linked)) throw new SourceAttention("incomplete_alias_hydration");
+    }
+  }
+  if (unavailable.some(value => !referenced.has(value))) throw new SourceAttention("unreferenced_unavailable_id");
+  const seen = new Set<string>();
+  const reachable = new Set<string>();
+  let associations = 0;
+  for (const row of array(snapshot.observations, "invalid_osv_snapshot", 2_000) as OsvSnapshot["observations"]) {
+    const key = canonicalJson(dependency(row.dependency));
+    if (seen.has(key)) throw new SourceAttention("duplicate_osv_observation");
+    seen.add(key);
+    if (!Array.isArray(row.advisoryIds) || ids(row.advisoryIds).length !== row.advisoryIds.length) {
+      throw new SourceAttention("invalid_osv_observation");
+    }
+    associations += row.advisoryIds.length;
+    if (associations > 2_000) throw new SourceAttention("finding_capacity");
+    for (const root of row.advisoryIds) {
+      if (!records.some(record => record.id === root)) throw new SourceAttention("missing_advisory_detail");
+      if (!reachable.has(root)) for (const linked of aliasClosure(records, root)) reachable.add(linked);
+    }
+  }
+  if ([...known].some(value => !reachable.has(value))) throw new SourceAttention("unreferenced_osv_record");
 }
 
 /** Conservative lockfile inputs only. An empty query result is not a rescan receipt. */
@@ -193,26 +266,34 @@ export function osvFindingInputs(
   if (!/^sha256:[a-f0-9]{64}$/u.test(context.artifactDigest)) throw new SourceAttention("invalid_artifact_digest");
   const observedAt = timestamp(context.observedAt, "invalid_observation_time");
   if (Date.parse(observedAt) < Date.parse(snapshot.queriedAt)) throw new SourceAttention("observation_before_query");
-  const { snapshotSha256, ...content } = snapshot;
-  if (sha256(canonicalJson(content)) !== snapshotSha256) throw new SourceAttention("snapshot_hash_mismatch");
-  if (snapshot.observations.reduce((total, row) => total + row.advisoryIds.length, 0) > 2_000) {
-    throw new SourceAttention("finding_capacity");
-  }
-  const graph = snapshot.records.map(({ id, aliases, upstream, modified, withdrawn }) => ({ id, aliases, upstream, modified, withdrawn }));
+  validateOsvSnapshot(snapshot);
+  const { snapshotSha256 } = snapshot;
+  // Missing alias documents remain active unknown nodes. They can neither withdraw
+  // another source nor help establish an all-sources range exclusion.
+  const sources = [...snapshot.records, ...snapshot.unavailableIds.map(id => ({
+    id, aliases: [], upstream: [], modified: null, withdrawn: null, affected: [], severity: "unknown" as const,
+  }))];
+  const graph = sources.map(({ id, aliases, upstream, modified, withdrawn }) => ({ id, aliases, upstream, modified, withdrawn }));
   const byId = new Map(snapshot.records.map(record => [record.id, record]));
+  const closures = new Map<string, string[]>();
   return snapshot.observations.flatMap(({ dependency: dep, advisoryIds }) => {
     const groups = new Map<string, Set<string>>();
     for (const advisoryId of advisoryIds) {
       if (!byId.has(advisoryId)) throw new SourceAttention("missing_advisory_detail");
-      const connected = aliasClosure(graph, advisoryId);
+      let connected = closures.get(advisoryId);
+      if (!connected) {
+        connected = aliasClosure(graph, advisoryId);
+        for (const linked of connected) closures.set(linked, connected);
+      }
       groups.set(connected[0]!, new Set(connected));
     }
     return [...groups.values()].map(connected => {
-      const records = snapshot.records.filter(row => connected.has(row.id))
+      const records = sources.filter(row => connected.has(row.id))
         .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
       const active = records.filter(row => row.withdrawn === null);
-      // A withdrawn/outside alias must not erase another active/affected source.
-      const record = (active.length ? active : records)[0]!;
+      // Prefer a known active revision, but an unavailable alias prevents an
+      // all-withdrawn group from taking rule 1.
+      const record = active.find(row => row.modified !== null) ?? active[0] ?? records[0]!;
       const advisoryId = record.id;
       const statuses = active.map(row => osvVersionStatus(row.affected, dep.ecosystem, dep.package, dep.version));
       const status = statuses.includes("affected") ? "affected"

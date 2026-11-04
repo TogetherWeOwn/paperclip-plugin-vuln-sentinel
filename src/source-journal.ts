@@ -4,7 +4,7 @@ import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { parseLockfileInventory, type LockfileInventory } from "./inventory.js";
 import type { FindingInput } from "./model.js";
-import { osvFindingInputs, parseOsvRecord, type OsvSnapshot } from "./osv.js";
+import { osvFindingInputs, type OsvSnapshot } from "./osv.js";
 import { SourceAttention, timestamp } from "./source-http.js";
 
 export interface StoredLockfiles {
@@ -39,23 +39,6 @@ function validateOsv(osv: OsvSnapshot, source: StoredLockfiles, observedAt: stri
   const expected = source.inventory.dependencies.map(({ ecosystem, package: name, version }) => canonicalJson({ ecosystem, package: name, version })).sort();
   const actual = osv.observations.map(row => canonicalJson(row.dependency)).sort();
   if (canonicalJson(actual) !== canonicalJson(expected)) throw new SourceAttention("osv_inventory_coverage_mismatch");
-  const records = new Set<string>();
-  for (const record of osv.records) {
-    if (records.has(record.id)) throw new SourceAttention("duplicate_osv_record");
-    records.add(record.id);
-    if (canonicalJson(parseOsvRecord(record.raw, record.id)) !== canonicalJson(record)) {
-      throw new SourceAttention("osv_raw_record_mismatch");
-    }
-    if (Date.parse(record.modified!) > Date.parse(osv.queriedAt)
-      || (record.withdrawn !== null && Date.parse(record.withdrawn) > Date.parse(osv.queriedAt))) {
-      throw new SourceAttention("future_osv_record");
-    }
-  }
-  for (const row of osv.observations) {
-    if (!Array.isArray(row.advisoryIds) || new Set(row.advisoryIds).size !== row.advisoryIds.length) {
-      throw new SourceAttention("invalid_osv_observation");
-    }
-  }
   const inputs = osvFindingInputs(osv, { repo: source.lockfiles.repo, artifactDigest: source.lockfiles.artifactDigest, observedAt });
   for (const input of inputs) Object.assign(input.provenance.toolVersions, source.inventory.toolVersions);
   return inputs;

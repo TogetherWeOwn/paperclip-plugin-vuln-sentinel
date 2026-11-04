@@ -20,6 +20,6 @@ export function sourceOsv(): OsvSnapshot {
   }] }, "GHSA-fixture");
   const content = { queriedAt: "2026-11-04T04:30:00Z", observations: [{
     dependency: { ecosystem: "npm" as const, package: "lib", version: "1.2.3" }, advisoryIds: [record.id],
-  }], records: [record] };
+  }], records: [record], unavailableIds: [] };
   return { ...content, snapshotSha256: sha256(canonicalJson(content)) };
 }

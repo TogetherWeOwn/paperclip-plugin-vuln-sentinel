@@ -1,4 +1,7 @@
 export { decide } from "./matcher.js";
+export { ThreatFeeds, parseKev, enrichThreats, enrichThreatInputs, validateThreatSnapshot } from "./threat-feeds.js";
+export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./threat-feeds.js";
+export { ThreatJournal } from "./threat-journal.js";
 export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
 export { SourceJournal } from "./source-journal.js";

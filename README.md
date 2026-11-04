@@ -34,12 +34,16 @@ Implemented:
   states and no inferred runtime/development scope or full-closure completeness.
 - Immutable raw lockfile/inventory and OSV source journal, exact query-tuple coverage,
   replay-safe inserts and readback validation before returning normalized inputs.
+- Bounded recursive OSV alias/upstream hydration, explicit unavailable documents,
+  raw/derived graph checks and conservative connected-source normalization.
+- Read-only KEV and date-pinned EPSS adapters, all-alias enrichment and immutable
+  company-scoped feed evidence before decisions. No API/model-version guessing.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, recursive upstream/alias hydration,
-current-head/cache selection and runtime wiring of durable source storage,
-verified scope/fix/severity enrichment, Dependabot permission switching, KEV/EPSS
-refresh, live rescan receipt verification, manifest/jobs and weekly job scheduling,
+other lockfile formats and complete coverage, current-head/cache selection and
+runtime wiring of durable source storage, verified scope/fix/severity enrichment,
+Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
+configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
 real consecutive report-only scans. No worker is wired to the explicit publication
 API; no weekly batch or per-finding issue has been emitted on a live host.
@@ -132,12 +136,25 @@ hashes are content bindings, not authenticated deployment receipts.
 
 `OsvSource.query(validatedDependencies)` deduplicates package tuples and makes
 100-query batches with independent per-query page tokens. It hydrates every
-returned advisory ID once, requires exact batch/detail revision equality, rejects
-future revisions and pagination cycles, and retains raw advisory JSON plus
-canonical-content SHA-256 and a timestamped snapshot hash. Sub-millisecond revision
-precision is retained. Failure returns attention, not a partial successful scan.
-The returned records reconcile aliases/upstream edges among retrieved advisories;
-recursive hydration of additional alias/upstream records is still required.
+returned advisory and recursively discovers each alias/upstream ID once, with
+shared-node/cycle deduplication under the original request/deadline budget. Exact
+batch/detail revision equality is required for batch IDs; every available linked
+record also requires a valid non-future revision. Raw advisory JSON, canonical
+content hashes and the graph/observations are retained in a timestamped snapshot.
+Sub-millisecond revision precision is retained.
+
+A batch ID returning 404 is a failed scan. A referenced alias/upstream ID returning
+404 is retained explicitly in `unavailableIds`, never treated as withdrawn or
+outside. Other HTTP/transport/pagination/size/budget failures throw attention,
+not partial success. Normalization rechecks raw/derived equality, graph coverage,
+unique observations/records, seed reachability and hashes. An unreferenced injected
+record or omitted discovered edge cannot silently enter a decision. Unavailable
+nodes have unknown revision/affectedness and prevent all-withdrawn/all-outside
+negative conclusions. Known active affected evidence remains available; all IDs
+still participate in MAL/KEV matching and finding identity. The eventual runtime
+must surface unavailable nodes as source attention, not complete alias coverage.
+This graph is the observed OSV closure, not proof that every external advisory
+source in the world has been discovered.
 
 `osvFindingInputs(snapshot, lockfileContext)` checks snapshot integrity and binds
 conservative inputs to the lockfile digest. It supplies only supported range proof,
@@ -145,11 +162,13 @@ validated withdrawal, known database severity and observed aliases. Connected
 source records produce one finding per package tuple: any active affected source
 wins, every active source must prove outside for an exclusion, and a withdrawn
 alias cannot erase an active source. The highest known active severity is retained.
-Unsupported ranges remain unknown. It does not guess dependency scope, directness, compatible
-fixes, CVSS scores, function/platform/Go proof, KEV or EPSS. KEV absence therefore
-continues to force residual unknown under the existing matcher. Full scope/fix/feed
-and alias-closure enrichment is required before publishing pilot decisions. An
-empty query result never resolves an existing member or establishes runtime safety.
+Unsupported ranges remain unknown. It does not guess dependency scope, directness,
+compatible fixes, CVSS scores, function/platform/Go proof, KEV or EPSS. The separate
+feed adapter below supplies KEV/EPSS only from validated, retained snapshots; without
+it KEV absence continues to force residual unknown under the existing matcher.
+Full runtime source/enrichment integration is required before publishing pilot
+decisions. An empty query result never resolves an existing member or establishes
+runtime safety.
 Snapshots/raw advisory content must be durably retained before journaling decisions;
 `SourceJournal` provides that library boundary, but no worker wires it yet. Typed
 cached/snapshot arguments are internal trusted values, not raw JSON ingestion
@@ -205,7 +224,54 @@ decision journal/publication. A future parser-version change needs an explicit
 historical-inventory migration/replay strategy; readback never silently replaces
 stored coverage with new parser semantics.
 
-Both readers use fixed provider URLs, refuse redirects, sanitize transport errors,
+### Retained KEV and EPSS evidence, before runtime refresh
+
+`ThreatFeeds.kev()` reads only CISA's fixed JSON feed, requiring a nonempty complete
+count, unique valid CVEs and valid release/added dates no later than the fetch time.
+It retains the raw catalog, catalog version, release/fetch times and content hash.
+No match in a valid catalog is distinct from missing/partial catalog coverage.
+
+`ThreatFeeds.epss(cves, date, model)` reads only FIRST's fixed API, deduplicating up
+to 2,000 CVEs into 100-ID date-pinned requests. It checks the protocol status/version,
+query offset/limit/total, exact requested CVE/date membership, duplicate entries and
+probability/percentile bounds. It does not accept shifted pages, mixed dates or
+silently truncated results. Missing scores remain `null`, never zero. Probability,
+not percentile, controls priority. A no-CVE call makes no HTTP request.
+
+The EPSS API protocol `version` is **not** a model version. A trusted runtime
+configuration must supply the verified model version, effective date interval
+(exclusive upper bound) and release-evidence reference. The query date must fall
+inside it. Test model mappings are fixtures, not verification of a live model or
+permission to enable the pilot. A later model release needs new verified config;
+the adapter cannot invent a mapping or infer it from the API envelope. No live
+provider contract/model check or scheduled refresh job is implemented yet.
+
+`enrichThreats`/`enrichThreatInputs` validate raw/derived feed snapshots, require
+fetch/query times no more than 48 hours old and a score date no more than 72 hours
+old at the input's recorded observation, and reject future evidence. The runtime
+must fetch feeds before recording that observation. Every CVE in the full observed
+alias/upstream graph must have been requested. The maximum known probability is
+used across aliases, while all missing scores remain in raw evidence. If no score
+is available, the existing severity fallback applies. KEV through any alias still produces
+P0 regardless of development scope. The adapters do not infer scope, compatible
+fixes, function absence or deployed/runtime completeness.
+
+`ThreatJournal` (migration 006) persists the full raw catalogs/responses, exact CVE
+query coverage, dates and model reference before its `enrich` method returns inputs.
+Company-scoped content-derived IDs, immutable inserts and validated readback make
+sequential/concurrent and lost-response replay safe. Inputs reference both feed
+hashes and the combined durable snapshot ID. Capacity is 16 MiB per snapshot, with
+no eviction or mutable latest-feed pointer. Storage/retention, source attention and
+refresh health still need runtime wiring; a content hash authenticates no producer.
+
+The offline integration regression exercises lockfile→OSV (including an unavailable
+alias)→retained feeds→rules→routing twice with one durable member/container and no
+native issue claims. This is not enabled-pilot or real two-run duplicate evidence.
+All HTTP tests use fake responses. Legacy OSV snapshots without explicit unavailable
+ID accounting require an explicit rehydration/migration before reuse; the new
+normalizer fails closed rather than interpreting missing coverage as complete.
+
+All source readers use fixed provider URLs, refuse redirects, sanitize transport errors,
 and perform no automatic retries. Each request is limited to 30 seconds / 4 MiB;
 an invocation is limited to 4 minutes / 128 calls, with no partial result on budget
 exhaustion. OSV limits are 2,000 dependency tuples/finding associations, 20 pages

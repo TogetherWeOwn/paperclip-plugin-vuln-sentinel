@@ -10,7 +10,7 @@ const dep: OsvDependency = { ecosystem: "npm", package: "example", version: "1.2
 const context = { repo: "example/repo", artifactDigest: `sha256:${"a".repeat(64)}`, observedAt };
 const now = () => new Date(observedAt);
 const advisory = (id = "GHSA-example") => ({
-  id, modified, aliases: ["CVE-2026-1234"], database_specific: { severity: "HIGH" },
+  id, modified, aliases: [] as string[], database_specific: { severity: "HIGH" },
   affected: [{ package: { ecosystem: "npm", name: "example" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }],
 });
 const json = (data: unknown) => new Response(JSON.stringify(data));
@@ -40,7 +40,7 @@ describe("bounded OSV source ingestion", () => {
     expect(input!.provenance.artifactKind).toBe("lockfile");
     expect(result.records[0]!.rawSha256).toBe(sha256(canonicalJson(advisory())));
     expect(decide(input!).priority).toBe(2);
-    expect(decide(input!).identity.aliases).toEqual(["CVE-2026-1234", "GHSA-example"]);
+    expect(decide(input!).identity.aliases).toEqual(["GHSA-example"]);
   });
 
   it("makes no source calls for an empty inventory", async () => {
@@ -73,20 +73,20 @@ describe("bounded OSV source ingestion", () => {
   it("keeps per-query pagination associated with the correct package", async () => {
     const fetch = transport([
       { results: [{ next_page_token: "token1", vulns: [{ id: "GHSA-example", modified }] }, {}] },
-      { results: [{ vulns: [{ id: "MAL-example", modified }] }] }, advisory(), advisory("MAL-example"),
+      { results: [{ vulns: [{ id: "MAL-example", modified }] }] }, advisory(), { ...advisory("MAL-example"), aliases: ["GHSA-example"] },
     ]);
     const result = await new OsvSource(fetch, now).query([dep, { ...dep, package: "z-other" }]);
     expect(result.observations[0]!.advisoryIds).toEqual(["GHSA-example", "MAL-example"]);
     expect(result.observations[1]!.advisoryIds).toEqual([]);
     const page = JSON.parse(fetch.mock.calls[1]![1].body as string).queries;
     expect(page).toEqual([{ package: { name: "example", ecosystem: "npm" }, version: "1.2.0", page_token: "token1" }]);
-    // Both records share a CVE alias: one grouped finding, elevated by MAL.
+    // Connected records produce one grouped finding, elevated by MAL.
     expect(osvFindingInputs(result, context).map(input => decide(input).priority)).toEqual([0]);
   });
 
   it.each(["withdrawn", "outside", "unknown"])("does not let an alias's %s record erase an active affected source", async kind => {
     const first = {
-      ...advisory("GHSA-a"), ...(kind === "withdrawn" ? { withdrawn: modified } : {}),
+      ...advisory("GHSA-a"), aliases: ["GHSA-b"], ...(kind === "withdrawn" ? { withdrawn: modified } : {}),
       affected: kind === "outside" ? [{ ...advisory().affected[0]!, versions: ["0.5.0"], ranges: [] }]
         : kind === "unknown" ? [] : advisory().affected,
     };
@@ -98,11 +98,11 @@ describe("bounded OSV source ingestion", () => {
     expect(inputs[0]!.versionEvidence.status).toBe("affected");
     expect(inputs[0]!.severity).toBe("critical");
     expect(decide(inputs[0]!).applicability).not.toBe("dropped");
-    expect(decide(inputs[0]!).identity.aliases).toEqual(["CVE-2026-1234", "GHSA-a", "GHSA-b"]);
+    expect(decide(inputs[0]!).identity.aliases).toEqual(["GHSA-a", "GHSA-b"]);
   });
 
   it("requires every active alias source to prove outside before dropping a group", async () => {
-    const first = { ...advisory("GHSA-a"), affected: [] };
+    const first = { ...advisory("GHSA-a"), aliases: ["GHSA-b"], affected: [] };
     const second = { ...advisory("GHSA-b"), affected: [{ ...advisory().affected[0]!, ranges: [], versions: ["0.5.0"] }] };
     const fetch = transport([{ results: [{ vulns: [{ id: first.id, modified }, { id: second.id, modified }] }] }, first, second]);
     const inputs = osvFindingInputs(await new OsvSource(fetch, now).query([dep]), context);
@@ -258,6 +258,85 @@ describe("bounded OSV source ingestion", () => {
   it("retains unknown rather than guessing severity from a CVSS vector", () => {
     expect(parseOsvRecord({ ...advisory(), database_specific: {}, severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N" }] }, "GHSA-example").severity)
       .toBe("unknown");
+  });
+});
+
+describe("recursive OSV alias/upstream hydration", () => {
+  it("walks transitive aliases and upstream with shared-node/cycle deduplication", async () => {
+    const a = { ...advisory(), aliases: ["CVE-2026-1234"], upstream: ["RUSTSEC-example"] };
+    const b = { ...advisory("CVE-2026-1234"), aliases: [a.id], upstream: ["GO-example"] };
+    const c = { ...advisory("RUSTSEC-example"), aliases: [b.id], upstream: ["GO-example"] };
+    const d = { ...advisory("GO-example"), aliases: [a.id], upstream: ["MAL-example"] };
+    const fetch = transport([batch(), a, b, c, d, advisory("MAL-example")]);
+    const result = await new OsvSource(fetch, now).query([dep]);
+    expect(fetch.mock.calls.slice(1).map(([url]) => url.split("/").at(-1))).toEqual([a.id, b.id, c.id, d.id, "MAL-example"]);
+    expect(result.unavailableIds).toEqual([]);
+    expect(result.records).toHaveLength(5);
+    const inputs = osvFindingInputs(result, context);
+    expect(inputs).toHaveLength(1);
+    expect(decide(inputs[0]!).priority).toBe(0);
+    expect(decide(inputs[0]!).identity.aliasGroup).toBe("CVE-2026-1234");
+    expect(result.observations[0]!.advisoryIds).toEqual([a.id]);
+  });
+
+  it.each(["outside", "withdrawn"])("an unavailable alias cannot certify %s", async kind => {
+    const a = { ...advisory(), aliases: ["CVE-2026-1234"],
+      ...(kind === "withdrawn" ? { withdrawn: modified } : { affected: [{ ...advisory().affected[0]!, ranges: [], versions: ["0.1.0"] }] }),
+    };
+    const fetch = transport([batch(), a, new Response(null, { status: 404 })]);
+    const result = await new OsvSource(fetch, now).query([dep]);
+    expect(result.unavailableIds).toEqual(["CVE-2026-1234"]);
+    const input = osvFindingInputs(result, context)[0]!;
+    expect(input.versionEvidence.status).toBe("unknown");
+    expect(decide(input).applicability).toBe("unknown");
+    expect(input.aliases.find(row => row.id === "CVE-2026-1234")!.modified).toBeNull();
+  });
+
+  it("retains an affected source despite a missing alias document", async () => {
+    const result = await new OsvSource(transport([batch(), { ...advisory(), aliases: ["CVE-2026-1234"] }, new Response(null, { status: 404 })]), now).query([dep]);
+    expect(osvFindingInputs(result, context)[0]!.versionEvidence.status).toBe("affected");
+  });
+
+  it("a hydrated active upstream prevents a withdrawn root from dropping the group", async () => {
+    const result = await new OsvSource(transport([batch(), { ...advisory(), withdrawn: modified, upstream: ["MAL-example"] }, advisory("MAL-example")]), now).query([dep]);
+    expect(decide(osvFindingInputs(result, context)[0]!).matchedRule).toBe(2);
+  });
+
+  it.each([403, 429, 500])("holds transitive HTTP %s instead of returning partial records", async status => {
+    const fetch = transport([batch(), { ...advisory(), aliases: ["CVE-2026-1234"] }, new Response(null, { status })]);
+    await expect(new OsvSource(fetch, now).query([dep])).rejects.toThrow(`osv_detail_http_${status}`);
+  });
+
+  it("rejects future revisions in transitively fetched records", async () => {
+    const fetch = transport([batch(), { ...advisory(), upstream: ["GO-example"] }, { ...advisory("GO-example"), modified: "2030-01-01T00:00:00Z" }]);
+    await expect(new OsvSource(fetch, now).query([dep])).rejects.toThrow("future_advisory_revision");
+  });
+
+  it("bounds discovered identifiers before fetching their documents", async () => {
+    const fetch = transport([batch(), { ...advisory(), aliases: Array.from({ length: 2_000 }, (_, n) => `CVE-2026-${n + 1000}`) }]);
+    await expect(new OsvSource(fetch, now).query([dep])).rejects.toThrow("alias_capacity");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares the original query deadline/request budget through recursive traversal", async () => {
+    const rows = Array.from({ length: 127 }, (_, n) => ({ ...advisory(n === 0 ? "GHSA-example" : `GHSA-${n}`), upstream: [`GHSA-${n + 1}`] }));
+    const fetch = transport([batch(), ...rows]);
+    await expect(new OsvSource(fetch, now).query([dep])).rejects.toThrow("query_budget_exhausted");
+    expect(fetch).toHaveBeenCalledTimes(128);
+  });
+
+  it.each(["omitted", "unreferenced", "root404", "duplicate"])("rejects rehashed %s hydration evidence", async kind => {
+    const result = await snapshot();
+    if (kind === "omitted") {
+      const raw = { ...advisory(), aliases: ["CVE-2026-1234"] };
+      result.records[0] = parseOsvRecord(raw, raw.id);
+    }
+    if (kind === "unreferenced") result.records.push(parseOsvRecord(advisory("GHSA-orphan"), "GHSA-orphan"));
+    if (kind === "root404") { result.records = []; result.unavailableIds = ["GHSA-example"]; }
+    if (kind === "duplicate") result.unavailableIds = ["GHSA-example"];
+    const { snapshotSha256: _, ...content } = result;
+    result.snapshotSha256 = sha256(canonicalJson(content));
+    expect(() => osvFindingInputs(result, context)).toThrow("Source requires attention");
   });
 });
 

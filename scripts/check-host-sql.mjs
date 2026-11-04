@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceJournal, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceJournal, ThreatFeeds, ThreatJournal, parseKev, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -33,6 +33,7 @@ function parameters(sql, params) {
 }
 let storedDecision;
 const storedSources = new Map();
+const storedThreats = new Map();
 let storedRouting = { version: 1, members: [], containers: [], attention: [] };
 let routingRevision = 0;
 const db = {
@@ -43,6 +44,9 @@ const db = {
     count++;
     if (sql.includes("source_snapshots")) {
       storedSources.set(params[1], { snapshot_id: params[1], source_kind: params[2], repo: params[3], source_sha: params[4], bundle: JSON.parse(params[5]) });
+    }
+    if (sql.includes("threat_snapshots")) {
+      storedThreats.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
     }
     if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
       storedRouting = JSON.parse(params[3]);
@@ -55,6 +59,7 @@ const db = {
     parameters(sql, params);
     count++;
     if (sql.includes("source_snapshots")) return storedSources.has(params[1]) ? [storedSources.get(params[1])] : [];
+    if (sql.includes("threat_snapshots")) return storedThreats.has(params[1]) ? [storedThreats.get(params[1])] : [];
     if (sql.includes("delivery_routing")) {
       return [{ revision: routingRevision, bundle: storedRouting }];
     }
@@ -96,8 +101,23 @@ const lockfileId = await sources.recordLockfiles("fixture-company", {
   artifactDigest: `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`,
 });
 await sources.readLockfiles("fixture-company", lockfileId);
-const osv = { queriedAt: "2026-11-04T04:30:00Z", observations: [], records: [] };
+const osv = { queriedAt: "2026-11-04T04:30:00Z", observations: [], records: [], unavailableIds: [] };
 const scan = await sources.recordOsv("fixture-company", lockfileId, { ...osv, snapshotSha256: sha256(canonicalJson(osv)) });
 const storedScan = await sources.readOsv("fixture-company", scan.snapshotId);
 if (!storedScan || storedScan.inputs.length !== 0) throw new Error("Host-validator fixture did not exercise source replay");
+const feedTime = "2026-11-04T04:29:00Z";
+const feeds = new ThreatFeeds(async () => new Response(JSON.stringify({
+  status: "OK", "status-code": 200, version: "1.0", total: 0, offset: 0, limit: 100, data: [],
+})), () => new Date(feedTime));
+const threats = new ThreatJournal(db);
+const threatId = await threats.record("fixture-company", {
+  kev: parseKev({ catalogVersion: "2026.11.03", dateReleased: "2026-11-03T00:00:00Z", count: 1,
+    vulnerabilities: [{ cveID: "CVE-2026-99999", dateAdded: "2026-11-03" }] }, feedTime),
+  epss: await feeds.epss(["CVE-2026-12345"], "2026-11-03", {
+    version: "fixture-model", effectiveFrom: "2026-01-01", effectiveUntil: "2027-01-01", reference: "fixture-release",
+  }),
+});
+await threats.read("fixture-company", threatId);
+const enriched = await threats.enrich("fixture-company", threatId, [input]);
+if (enriched[0]?.provenance.threatSnapshotId !== threatId) throw new Error("Host-validator fixture did not exercise persisted feed enrichment");
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

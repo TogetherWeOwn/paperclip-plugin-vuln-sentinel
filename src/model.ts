@@ -15,12 +15,13 @@ export interface Advisory {
 
 export interface Provenance {
   observedAt: string;
+  threatSnapshotId?: string;
   artifactDigest: string;
   artifactKind?: "lockfile" | "image" | "go_binary" | "rust_binary" | "worker_bundle";
   source: { kind: "osv"; queriedAt: string; snapshotSha256: string | null }
     | { kind: "dependabot"; updatedAt: string };
-  epss: { date: string; modelVersion: string; probability: number | null } | null;
-  kev: { catalogVersion: string; aliases: string[] } | null;
+  epss: { date: string; modelVersion: string; probability: number | null; snapshotSha256?: string } | null;
+  kev: { catalogVersion: string; aliases: string[]; snapshotSha256?: string } | null;
   toolVersions: Record<string, string>;
 }
 
