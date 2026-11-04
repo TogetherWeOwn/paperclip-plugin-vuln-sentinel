@@ -3,6 +3,7 @@ import { decide } from "./matcher.js";
 import type { FindingInput } from "./model.js";
 import { canonicalJson, findingIdentity, sha256 } from "./identity.js";
 import { binding, closure, finding, goScan } from "./test/fixtures.js";
+import { aggregateFindingInputs } from "./version-set.js";
 
 function withEpss(probability: number | null): FindingInput {
   const input = finding();
@@ -40,6 +41,75 @@ describe("deterministic report-only rules", () => {
     withdrawn.aliases[0]!.withdrawn = "bad metadata";
     withdrawn.provenance.kev!.aliases = [];
     expect(decide(withdrawn)).toMatchObject({ matchedRule: 8, applicability: "unknown" });
+  });
+
+  describe("affected-range result discriminator", () => {
+    const unsupported = [undefined, null, "", " ", "AFFECTED", "no_hits", false, 0, {}];
+
+    describe.each(["platform", "go", "functions", "fix"] as const)("%s path", kind => {
+      it.each(unsupported)("missing/unsupported range status %j remains residual", status => {
+        const input = finding({ fixedVersion: "1.0.1", compatibleFixVerified: true });
+        if (kind === "platform") Object.assign(input, { ecosystem: "crates.io", platform: {
+          complete: true, tool: "rustsec", ...binding(),
+          buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"],
+        } });
+        if (kind === "go") Object.assign(input, { ecosystem: "Go", go: { ...goScan(), status: "package_only" } });
+        if (kind === "functions") input.functions = closure();
+        Object.assign(input.versionEvidence, { status });
+        const before = structuredClone(input);
+        const result = decide(input);
+        expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+        expect(result.reasons).toContain("Affected-range coverage unavailable or artifact mismatch");
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      });
+    });
+
+    it("a deleted range status cannot prove full-closure absence", () => {
+      const input = finding({ functions: closure() });
+      Reflect.deleteProperty(input.versionEvidence, "status");
+      expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown",
+        proposedVex: null, proposedRemediation: null });
+    });
+
+    it.each(["KEV", "MAL"])("unsupported range status cannot suppress %s P0", kind => {
+      for (const status of unsupported) {
+        const input = urgent();
+        Object.assign(input.versionEvidence, { status });
+        if (kind === "MAL") {
+          input.provenance.kev = null;
+          input.aliases[0]!.aliases.push("MAL-2026-1");
+        }
+        expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+          delivery: "immediate", proposedVex: null, proposedRemediation: null });
+      }
+    });
+
+    it("valid withdrawal still precedes unsupported range status", () => {
+      for (const status of unsupported) {
+        const input = urgent();
+        Object.assign(input.versionEvidence, { status });
+        input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+        expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+      }
+    });
+
+    it.each(["1.0.0", "2.0.0"])("unsupported tuple %s cannot disappear beside a proven outside tuple", version => {
+      const inputs = ["1.0.0", "2.0.0"].map(value => finding({ version: value, functions: closure() }));
+      for (const input of inputs) {
+        Object.assign(input.versionEvidence, { status: input.version === version ? "no_hits" : "outside" });
+      }
+      const input = aggregateFindingInputs(inputs)[0]!;
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions).toHaveLength(2);
+      expect(result.versionDecisions!.find(tuple => tuple.version === version)).toMatchObject({
+        applicability: "unknown", matchedRule: 8,
+      });
+      expect(decide(structuredClone(input))).toEqual(result);
+    });
   });
 
   it("stale range exclusion cannot drop a revised advisory", () => {

@@ -123,7 +123,7 @@ function decideVersion(raw: FindingInput): Decision {
   if (advisory.withdrawn !== null && !validTime(advisory.withdrawn)) return residual("Invalid withdrawal metadata");
   if (!validTime(input.provenance.observedAt)) return residual("Invalid observation timestamp");
   if (!nonblank(input.provenance.kev?.catalogVersion)) return residual("KEV coverage unavailable");
-  if (input.versionEvidence.status === "unknown" || !bound(input, input.versionEvidence)) {
+  if (input.versionEvidence.status !== "affected" || !bound(input, input.versionEvidence)) {
     return residual("Affected-range coverage unavailable or artifact mismatch");
   }
   if (input.ecosystem === "crates.io" && input.platform) {

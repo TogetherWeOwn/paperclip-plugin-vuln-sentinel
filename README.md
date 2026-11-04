@@ -1145,7 +1145,7 @@ Remediation is proposed only when actionable tuples agree, and VEX only when all
 non-dropped tuples agree on the negative proposal. All-dropped sets have no VEX or
 delivery; a negative observation still never resolves a member.
 
-Rules `1.0.5` require an own, nonblank string in `provenance.toolVersions` for
+Rules `1.0.6` require an own, nonblank string in `provenance.toolVersions` for
 bound range, platform, Go and full-closure function evidence. Inherited object
 properties and whitespace-only versions are missing provenance, not proof that
 can drop a finding or propose negative VEX. Explicit own prototype-shaped keys
@@ -1179,8 +1179,15 @@ require `compatibleFixVerified: true`; a truthy nonboolean verification flag is
 not compatibility evidence. Valid rule-1 evidence still precedes later incomplete
 evidence.
 
+After valid rule-1 drops and known MAL/KEV P0 handling, range evidence must
+explicitly report `affected` before rules 3–6 can continue. Missing or unsupported
+result statuses remain residual unknown even with otherwise bound platform, Go,
+function-absence or compatible-fix evidence. An unknown tuple cannot disappear
+beside another version proven outside the affected ranges. This does not infer
+code reachability from a version-range result or extend supported range syntax.
+
 The journal stores one complete set/decision revision, with a versioned
-`1.0.5+all-versions.1` reducer, input hash and each tuple's decision hash,
+`1.0.6+all-versions.1` reducer, input hash and each tuple's decision hash,
 applicability and rule trace. Tuple enumeration order does not change the action
 or hash. No tuple-level decision head competes with the aggregate via timestamp
 or lexical hash ordering. Current poll/lockfile/OSV/feed references apply to every
