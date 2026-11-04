@@ -266,6 +266,55 @@ describe("negative proof tool-version coverage", () => {
   });
 });
 
+describe("artifact digest provenance coverage", () => {
+  it.each(negativeProofs.flatMap(proof => ["", " ", "\t\n"].map(digest => ({ ...proof, digest }))))(
+    "holds $name when matching artifact digests are blank $digest", ({ create, digest }) => {
+      const { input, evidence } = create();
+      input.provenance.artifactDigest = digest;
+      input.versionEvidence.artifactDigest = digest;
+      evidence.artifactDigest = digest;
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["KEV", "MAL"].flatMap(kind => ["", " ", "\t\n"].map(digest => ({ kind, digest }))))(
+    "does not let matching blank artifact digests $digest suppress $kind P0", ({ kind, digest }) => {
+      const input = urgent();
+      input.provenance.artifactDigest = digest;
+      input.versionEvidence.artifactDigest = digest;
+      input.versionEvidence.status = "outside";
+      if (kind === "MAL") {
+        input.provenance.kev = null;
+        input.aliases[0]!.aliases.push("MAL-2026-1");
+      }
+      expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+        delivery: "immediate", proposedVex: null, proposedRemediation: null });
+    },
+  );
+
+  it.each(negativeProofs)("keeps matching nonblank opaque digests eligible for $name", ({ create, rule }) => {
+    const { input, evidence } = create();
+    input.provenance.artifactDigest = "opaque-artifact-fixture";
+    input.versionEvidence.artifactDigest = input.provenance.artifactDigest;
+    evidence.artifactDigest = input.provenance.artifactDigest;
+    expect(decide(input)).toMatchObject({ matchedRule: rule, delivery: "none" });
+  });
+
+  it("preserves advisory withdrawal precedence without artifact evidence", () => {
+    const input = urgent();
+    input.provenance.artifactDigest = " ";
+    input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+});
+
 describe("feed-version provenance coverage", () => {
   it.each(negativeProofs.slice(1).flatMap(proof => ["", " ", "\t\n"].map(version => ({ ...proof, version }))))(
     "holds $name when the KEV catalog version is blank $version", ({ create, version }) => {

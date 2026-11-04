@@ -14,7 +14,7 @@ const validTime = (value: string | null): value is string =>
 function bound(input: FindingInput, evidence: BoundEvidence): boolean {
   const advisory = input.aliases.find(item => item.id === input.advisoryId);
   const toolVersion = input.provenance.toolVersions[evidence.tool];
-  return evidence.complete && input.provenance.artifactDigest.length > 0
+  return evidence.complete && nonblank(input.provenance.artifactDigest)
     && evidence.artifactDigest === input.provenance.artifactDigest
     && evidence.advisoryId === input.advisoryId && validTime(evidence.advisoryModified)
     && evidence.advisoryModified === advisory?.modified

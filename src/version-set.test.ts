@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.2+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.3+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -74,6 +74,23 @@ describe("same-action all-version aggregation", () => {
     expect(decide(group([tuple("1", "outside", patch), tuple("2", "unknown", patch)]))).toMatchObject({
       applicability: "affected", matchedRule: 2, priority: 0, slaDays: 1, delivery: "immediate", proposedVex: null,
     });
+  });
+
+  it("holds every outside tuple when matching artifact digests are blank", () => {
+    const inputs = [tuple("1.0.0", "outside"), tuple("2.0.0", "outside")];
+    for (const input of inputs) {
+      input.provenance.artifactDigest = " ";
+      input.versionEvidence.artifactDigest = " ";
+    }
+    const input = group(inputs);
+    const before = structuredClone(input);
+    const result = decide(input);
+    expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions).toHaveLength(2);
+    expect(result.versionDecisions!.every(decision => decision.applicability === "unknown")).toBe(true);
+    expect(input).toEqual(before);
+    expect(decide(structuredClone(input))).toEqual(result);
   });
 
   it("preserves rule 1 over P0 when every version has complete negative evidence", () => {
@@ -103,7 +120,7 @@ describe("same-action all-version aggregation", () => {
       }
     }
     const result = decide(group(inputs));
-    expect(result).toMatchObject({ rulesVersion: "1.0.2+all-versions.1", applicability: "unknown",
+    expect(result).toMatchObject({ rulesVersion: "1.0.3+all-versions.1", applicability: "unknown",
       matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions).toHaveLength(2);
     for (const decision of result.versionDecisions!) {
