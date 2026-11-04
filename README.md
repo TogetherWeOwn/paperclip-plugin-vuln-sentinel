@@ -221,6 +221,47 @@ REA angle: reuse the existing exact-tree manifest observer and inventory parser,
 retaining the lockfile's explicit root declarations rather than executing npm,
 adding another resolver, or promoting colocated paths into trusted owner evidence.
 
+## Offline exact-tree pnpm importer declaration observations
+
+`observePnpmImporterContext(discovery, snapshot, lockfilePath, importer,
+manifestContent, candidate?)` compares pnpm v9 declarations for one explicitly
+selected importer with exact-tree `package.json` bytes. `.` selects the lockfile's
+reported root; a canonical relative key selects the reported path below the
+lockfile directory. Parent traversal, absolute paths, backslashes and normalized
+lookalikes are rejected. The exact importer key must exist; no root or neighboring
+workspace fallback is attempted. Path correspondence is **not** proof of pnpm
+workspace membership, configuration, dependency ownership or current source selection.
+
+The observer reuses the immutable inventory and manifest validators and the bounded
+stable SemVer declaration evaluator. Each dependency/development/optional section
+is compared independently; peer constraints present only in the manifest remain
+manifest-only. Unsupported importer peer sections reject rather than inventing a
+schema. Literal disagreements, missing sides and unsupported syntax remain explicit.
+Candidate range results on each side are `matches`, `does_not_match`, `unknown` or
+null as in the npm root observer. The resolved reference is preserved as reported
+text, **not** used to pick an installed version, follow a link, rewrite an alias,
+prove an owner edge or infer a compatible fix.
+
+Every same-name inventory tuple/location in the selected lockfile is retained,
+including multiple versions. Malformed inventory loses its partial candidates;
+its attention codes remain visible alongside independently valid declarations.
+Empty declarations/candidates never prove absence. Root settings, catalogs,
+overrides, patches, resolution semantics, transitive/peer/workspace constraints,
+release availability and complete all-version compatibility remain unevaluated.
+
+Results always retain `attention`, `scope: "unknown"`, `direct: null` and
+`compatibleFixVerified: false`. Exact input and observer versions participate in a
+replayable observation hash, not authentication or authority. The pure function
+has no HTTP, database, issue or runtime port; it does not change source selection,
+normalized policy inputs, pins, claims or rule 6. Existing input bounds plus 10,000
+combined declaration rows and 1 MiB output reject excess rather than truncate.
+Offline tests are not enabled scans, authenticated host integration or pilot
+acceptance. Publication remains NOT ADMISSIBLE/off.
+
+REA angle: reuse the retained pnpm importer shape and existing exact-tree npm
+manifest/range observer, without executing a package manager, adding a resolver or
+promoting reported paths/references into verified dependency edges.
+
 ## Offline reported OSV fixing boundaries
 
 `observeOsvFixes(snapshot, dependency)` validates the complete retained raw/derived

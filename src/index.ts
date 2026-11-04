@@ -28,6 +28,8 @@ export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";
 export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";
 export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
+export { observePnpmImporterContext, PNPM_IMPORTER_CONTEXT_VERSION } from "./pnpm-importer-context.js";
+export type { PnpmImporterContextObservation } from "./pnpm-importer-context.js";
 export { observeNpmRootContext, NPM_ROOT_CONTEXT_VERSION } from "./npm-root-context.js";
 export type { NpmRootContextObservation } from "./npm-root-context.js";
 export { observeNpmManifest, NPM_MANIFEST_VERSION } from "./npm-manifest.js";
