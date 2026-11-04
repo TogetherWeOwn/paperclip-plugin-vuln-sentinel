@@ -152,6 +152,21 @@ describe("offline pnpm importer declaration context", () => {
     expect(() => observe(fixture(importer, manifest, ".", "pnpm-lock.yaml", raw))).toThrow();
   });
 
+  it.each(["true", "false", "null", "42", "[example]", "{example: value}"])(
+    "rejects non-string key %s even outside the selected importer", key => {
+      const f = fixture();
+      const raw = `${f.source.files[0]!.content}\nmetadata:\n  ? ${key}\n  : value\n`;
+      expect(() => observe(fixture(importer, manifest, ".", "pnpm-lock.yaml", raw))).toThrow("unsupported_pnpm_yaml_key");
+    });
+
+  it("does not compare a declaration silently selected by key coercion", () => {
+    const raw = `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      true: {specifier: ^1.0.0, version: 1.2.3}\n      'true': {specifier: ^2.0.0, version: 2.0.0}\npackages: {}\nsnapshots: {}\n`;
+    const f = fixture(importer, { dependencies: { true: "^2.0.0" } }, ".", "pnpm-lock.yaml", raw);
+    const before = structuredClone(f);
+    expect(() => observe(f, { ...candidate, package: "true" })).toThrow("unsupported_pnpm_yaml_key");
+    expect(f).toEqual(before);
+  });
+
   it.each([null, 1, {}, [], "bad\nvalue", "x".repeat(257)])("rejects malformed selected specifier %j", specifier => {
     expect(() => observe(fixture({ dependencies: { example: { specifier, version: "1.2.3" } } }))).toThrow("invalid_pnpm_specifier");
   });

@@ -1,13 +1,14 @@
-import { isScalar, parseDocument, visit } from "yaml";
+import { parseDocument } from "yaml";
 import { discoveryCoverage, validateRepositoryDiscovery, type RepositoryDiscovery } from "./github-discovery.js";
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { parseLockfileInventory, type InventoryDependency } from "./inventory.js";
 import { npmDeclarationRange, observeNpmManifest, type NpmManifestObservation } from "./npm-manifest.js";
 import type { OsvDependency } from "./osv.js";
+import { validatePnpmMappingKeys } from "./pnpm-yaml.js";
 import { object, SourceAttention } from "./source-http.js";
 
-export const PNPM_IMPORTER_CONTEXT_VERSION = "1.0.0";
+export const PNPM_IMPORTER_CONTEXT_VERSION = "1.0.1";
 const SECTIONS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
 const NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 type Section = typeof SECTIONS[number];
@@ -70,9 +71,7 @@ export function observePnpmImporterContext(
   try {
     const document = parseDocument(file.content, { schema: "core", uniqueKeys: true, customTags: [], strict: true });
     if (document.errors.length || document.warnings.length) throw new SourceAttention("invalid_pnpm_importer_yaml");
-    visit(document, { Pair: (_key, pair) => {
-      if (isScalar(pair.key) && pair.key.value === "<<") throw new SourceAttention("unsupported_yaml_merge");
-    } });
+    validatePnpmMappingKeys(document);
     root = object(document.toJS({ maxAliasCount: 0 }), "invalid_pnpm_importer_lockfile");
   } catch (error) {
     if (error instanceof SourceAttention) throw error;

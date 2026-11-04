@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 import { parse } from "semver";
 import { parse as parseToml } from "smol-toml";
-import { isScalar, parseDocument, visit } from "yaml";
+import { parseDocument } from "yaml";
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import type { OsvDependency } from "./osv.js";
+import { validatePnpmMappingKeys } from "./pnpm-yaml.js";
 import { object, SourceAttention } from "./source-http.js";
 
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.7", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.8", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -149,10 +150,8 @@ function pnpmKey(key: string): OsvDependency {
 function readPnpm(content: string, add: Add, issues: Set<string>): number {
   const document = parseDocument(content, { schema: "core", uniqueKeys: true, customTags: [], strict: true });
   if (document.errors.length || document.warnings.length) throw new SourceAttention("invalid_pnpm_yaml");
-  // No alias expansion, merge keys or executable/custom YAML tags.
-  visit(document, { Pair: (_key, pair) => {
-    if (isScalar(pair.key) && pair.key.value === "<<") throw new SourceAttention("unsupported_yaml_merge");
-  } });
+  // No key coercion, alias expansion, merge keys or executable/custom YAML tags.
+  validatePnpmMappingKeys(document);
   const root = object(document.toJS({ maxAliasCount: 0 }), "invalid_pnpm_lockfile");
   if (root.lockfileVersion !== "9.0" && root.lockfileVersion !== 9) throw new SourceAttention("unsupported_pnpm_lockfile_version");
   const packages = entries(root.packages === undefined ? {} : root.packages, "invalid_pnpm_packages");

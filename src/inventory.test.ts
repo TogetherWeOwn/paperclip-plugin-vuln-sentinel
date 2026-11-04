@@ -167,6 +167,42 @@ describe("lockfile inventory boundary", () => {
   });
 });
 
+describe("pnpm YAML mapping identity", () => {
+  it.each(["true", "false", "null", "~", "42", "0x2a", "1.5", ".nan", "[example]", "{example: value}", ""])(
+    "holds non-string mapping key %j before JavaScript conversion", key => {
+      const content = `${pnpm}\nmetadata:\n  ? ${key}\n  : value\n`;
+      const result = expectAttention("pnpm-lock.yaml", content, "unsupported_pnpm_yaml_key");
+      expect(result.dependencies).toEqual([]);
+    });
+
+  it.each(["dependencies", "devDependencies", "optionalDependencies"])(
+    "does not collapse boolean and quoted string keys in %s", section => {
+      const content = `lockfileVersion: '9.0'\nimporters:\n  .:\n    ${section}:\n      true: {specifier: 1.0.0, version: 1.0.0}\n      'true': {specifier: 2.0.0, version: 2.0.0}\npackages:\n  true@2.0.0:\n    resolution: {integrity: sha512-abc=}\nsnapshots:\n  true@2.0.0: {}\n`;
+      const result = expectAttention("pnpm-lock.yaml", content, "unsupported_pnpm_yaml_key");
+      expect(result.dependencies).toEqual([]);
+    });
+
+  it.each(["'true'", "'false'", "'null'", "'42'", "'1.5'"])("preserves quoted name %s exactly", key => {
+    const name = key.slice(1, -1);
+    const content = `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      ${key}: {specifier: 1.2.3, version: 1.2.3}\npackages:\n  ${name}@1.2.3:\n    resolution: {integrity: sha512-abc=}\nsnapshots:\n  ${name}@1.2.3: {}\n`;
+    const result = parseFile("pnpm-lock.yaml", content);
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies).toMatchObject([{ package: name, version: "1.2.3", scope: "unknown", direct: null }]);
+  });
+
+  it("discards only the ambiguous file, preserving independent inventory and exact raw bytes", () => {
+    const content = `${pnpm}\nmetadata: {true: first, 'true': second}\n`;
+    const input = snapshot({ "pnpm-lock.yaml": content, "nested/package-lock.json": npm({ "node_modules/lib": npmRow() }) });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files.find(row => row.path === "pnpm-lock.yaml")!.issues).toEqual(["unsupported_pnpm_yaml_key"]);
+    expect(result.dependencies).toMatchObject([{ package: "lib", locations: [{ path: "nested/package-lock.json" }] }]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+    expect(input).toEqual(before);
+    expect(parseLockfileInventory(input)).toEqual(result);
+  });
+});
+
 describe("npm lockfile entries", () => {
   it("parses this repository's actual locked registry inventory offline", () => {
     const result = parseFile("package-lock.json", readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));

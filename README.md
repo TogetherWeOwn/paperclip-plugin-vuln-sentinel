@@ -761,7 +761,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.7` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.8` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 npm installation locators require an exact `node_modules` path segment, not a
@@ -796,6 +796,17 @@ remain shape-only observations, and valid local references still require attenti
 Scoped names, peer suffixes and alias targets retain their existing identities.
 No owner edge, scope, full closure, compatibility or available-release proof is
 inferred from these declaration/reference checks.
+
+Both the pnpm inventory parser and importer-context observer require string scalar
+mapping keys throughout the YAML document before converting it to JavaScript.
+Boolean, numeric, null, collection and alias keys reject as
+`unsupported_pnpm_yaml_key`: YAML keys such as `true` and `'true'` can be distinct
+in the syntax tree but collapse to one JavaScript property, silently losing a
+declaration despite duplicate-key checks. Quoted string package names remain
+unchanged. An ambiguous file loses its partial inventory, while valid independent
+files remain available; importer context rejects rather than comparing a coerced
+last-wins declaration. This is syntax/identity validation, not an ownership,
+workspace, scope or compatible-fix proof.
 
 Cargo dependency lists are checked against that same lockfile's complete package
 row table, including local and non-registry rows. Supported references are an exact
@@ -847,7 +858,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.7` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.8` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs
