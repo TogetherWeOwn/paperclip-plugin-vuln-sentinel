@@ -845,6 +845,51 @@ describe("pnpm v9 entries", () => {
 });
 
 describe("Cargo locked inventory is not native inventory", () => {
+  const temporalScalars = ["1979-05-27", "07:32:00", "1979-05-27T07:32:00", "1979-05-27T07:32:00Z"];
+
+  it.each(temporalScalars)("rejects temporal package rows %s before returning partial same-file positives", scalar => {
+    const registry = `{ name = "lib", version = "1.2.3", source = "registry+https://github.com/rust-lang/crates.io-index", checksum = "${"a".repeat(64)}" }`;
+    for (const v of [3, 4]) for (const rows of [`${registry}, ${scalar}`, `${scalar}, ${registry}`]) {
+      const input = snapshot({ "Cargo.lock": `version = ${v}\npackage = [${rows}]` });
+      const before = structuredClone(input);
+      const result = parseLockfileInventory(input);
+      expect(result.files[0]).toMatchObject({ status: "attention", entries: 0, issues: ["invalid_crate_name"] });
+      expect(result.dependencies).toEqual([]);
+      expect(result.coverage.configuredPathsParsed).toBe(false);
+      expect(input).toEqual(before);
+      expect(parseLockfileInventory(input)).toEqual(result);
+    }
+  });
+
+  it.each(temporalScalars)("rejects temporal dependency lists %s without losing independent lockfile positives", scalar => {
+    const input = snapshot({
+      "Cargo.lock": `version = 4\n${cargoPackage("owner")}dependencies = ${scalar}\n${cargoPackage()}`,
+      "nested/Cargo.lock": `version = 4\n${cargoPackage("independent")}`,
+    });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files.find(row => row.path === "Cargo.lock")).toMatchObject({
+      status: "attention", entries: 0, issues: ["invalid_cargo_dependencies"],
+    });
+    expect(result.files.find(row => row.path === "nested/Cargo.lock")!.status).toBe("parsed");
+    expect(result.dependencies).toEqual([{
+      ecosystem: "crates.io", package: "independent", version: "1.2.3", scope: "unknown", direct: null,
+      locations: [{ path: "nested/Cargo.lock", locator: "package[0]" }],
+    }]);
+    expect(result.coverage).toMatchObject({ configuredPathsParsed: false, fullDependencyClosure: "not_proven", runtimeCompleteness: "not_proven" });
+    expect(input).toEqual(before);
+  });
+
+  it.each(temporalScalars)("retains valid Cargo packages with unevaluated temporal metadata %s", scalar => {
+    for (const v of [3, 4]) {
+      const result = parseFile("Cargo.lock", `version = ${v}\ncreated = ${scalar}\n${cargoPackage()}metadata = ${scalar}`);
+      expect(result.files[0]).toMatchObject({ status: "parsed", entries: 1, issues: [] });
+      expect(result.dependencies).toHaveLength(1);
+      expect(result.dependencies[0]).toMatchObject({ package: "lib", scope: "unknown", direct: null });
+      expect(result.coverage).toMatchObject({ fullDependencyClosure: "not_proven", runtimeCompleteness: "not_proven" });
+    }
+  });
+
   it.each([3, 4])("retains every registry version in Cargo lock v%i", v => {
     const result = parseFile("Cargo.lock", `version = ${v}\n${cargoPackage()}${cargoPackage("lib", "2.0.0")}`);
     expect(result.coverage.configuredPathsParsed).toBe(true);
