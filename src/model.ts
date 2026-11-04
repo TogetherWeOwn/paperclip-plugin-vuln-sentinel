@@ -13,8 +13,15 @@ export interface Advisory {
   withdrawn: string | null;
 }
 
+export interface SourceSelection {
+  pollRevision: number;
+  token: string;
+  snapshotId: string;
+}
+
 export interface Provenance {
   observedAt: string;
+  sourceSelection?: SourceSelection;
   threatSnapshotId?: string;
   artifactDigest: string;
   artifactKind?: "lockfile" | "image" | "go_binary" | "rust_binary" | "worker_bundle";

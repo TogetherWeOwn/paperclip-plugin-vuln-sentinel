@@ -18,6 +18,7 @@ export interface SourcePoll {
 }
 
 export interface CurrentSource extends SourcePoll {
+  pollRevision: number;
   snapshotId: string;
   startedAt: string;
   completedAt: string;
@@ -192,13 +193,15 @@ export class SourcePollStore {
       || !same(stored.lockfiles.files.map(file => file.path).sort(), normalized.paths)) throw new SourceAttention("source_poll_snapshot_mismatch");
     if ((await this.read(companyId, normalized.repo))?.revision !== row!.revision) throw new SourceAttention("source_poll_superseded");
     this.fresh(attempt, maxAgeMs);
-    return { companyId, source: normalized, token: attempt.token, snapshotId: attempt.snapshotId!,
+    return { companyId, source: normalized, token: attempt.token, pollRevision: row!.revision, snapshotId: attempt.snapshotId!,
       startedAt: attempt.startedAt, completedAt: attempt.completedAt!, stored };
   }
 
   async assertCurrent(selected: CurrentSource, maxAgeMs = DAY): Promise<void> {
     const current = await this.current(selected.companyId, selected.source, maxAgeMs);
-    if (current.token !== selected.token || current.snapshotId !== selected.snapshotId) throw new SourceAttention("source_poll_superseded");
+    if (current.token !== selected.token || current.snapshotId !== selected.snapshotId || current.pollRevision !== selected.pollRevision
+      || current.startedAt !== selected.startedAt || current.completedAt !== selected.completedAt
+      || !same(current.stored, selected.stored)) throw new SourceAttention("source_poll_superseded");
   }
 }
 

@@ -2,7 +2,10 @@ import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { DATABASE_NAMESPACE, FINDING_ORIGIN_KIND, WEEKLY_ORIGIN_KIND } from "./claims.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { DecisionJournal } from "./journal.js";
-import type { Decision, FindingInput, Priority } from "./model.js";
+import type { Decision, FindingInput, Priority, SourceSelection } from "./model.js";
+import { sourceFence, sourceSelection } from "./source-fence.js";
+import { SourceAttention } from "./source-http.js";
+import { SourcePollStore, type CurrentSource } from "./source-polls.js";
 import { rescanEvidenceId, rescanRejection } from "./rescan.js";
 import type { RescanEvidence, ResolutionRecord } from "./rescan.js";
 
@@ -18,6 +21,7 @@ export interface RoutingMember {
   remediationUnit: string;
   currentOriginId: string;
   decisionId: string;
+  sourceSelection?: SourceSelection;
   observedAt: string | null;
   firstObservedAt: string;
   artifactDigest: string;
@@ -91,7 +95,10 @@ const empty = (): RoutingSnapshot => ({ version: 1, members: [], containers: [],
 const intersects = (a: string[], b: string[]) => a.some(value => b.includes(value));
 const earlier = (a: string, b: string) => Date.parse(a) <= Date.parse(b) ? a : b;
 const validTime = (value: string) => /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
-const newer = (observedAt: string | null, decisionId: string, member: RoutingMember) => {
+const newer = (observedAt: string | null, decisionId: string, member: RoutingMember, selection?: SourceSelection) => {
+  if (selection?.pollRevision !== member.sourceSelection?.pollRevision) {
+    return (selection?.pollRevision ?? -1) > (member.sourceSelection?.pollRevision ?? -1);
+  }
   const next = observedAt === null ? -Infinity : Date.parse(observedAt);
   const prior = member.observedAt === null ? -Infinity : Date.parse(member.observedAt);
   return next > prior || (next === prior && decisionId > member.decisionId);
@@ -139,7 +146,7 @@ function route(
   }
   let member = exact ?? sameUnit[0];
   if (member) {
-    if (member.state === "superseded" && newer(observedAt, decisionId, member)) {
+    if (member.state === "superseded" && newer(observedAt, decisionId, member, input.provenance.sourceSelection)) {
       return attention(snapshot, decision, decisionId, "Superseded action observed again; reconcile lineage rather than silently reactivate");
     }
     // Retain old keys as redirects. Never retag the original native issue or move buckets.
@@ -152,7 +159,7 @@ function route(
       member.state = "unresolved";
       touch(snapshot, member);
     }
-    if (!newer(observedAt, decisionId, member)) {
+    if (!newer(observedAt, decisionId, member, input.provenance.sourceSelection)) {
       if (priorIdentity !== canonicalJson([member.identityKeys, member.aliases])) touch(snapshot, member);
       return outcome(snapshot, member, "reused", "Same or older decision; original membership retained");
     }
@@ -166,7 +173,7 @@ function route(
       ? related.find(item => item.identityKeys.includes(relationship.predecessorId)) : undefined;
     if (related.length && (!relationship?.evidenceRef.trim()
       || (relationship.kind === "replacement" && (!predecessor || predecessor.state !== "unresolved"
-        || !newer(observedAt, decisionId, predecessor))))) {
+        || !newer(observedAt, decisionId, predecessor, input.provenance.sourceSelection))))) {
       return attention(snapshot, decision, decisionId, "Changed remediation target needs evidenced replacement or independent-action reconciliation");
     }
     if (relationship?.kind === "replacement" && !predecessor) {
@@ -193,6 +200,7 @@ function route(
   }
   member.currentOriginId = identity.originId;
   member.decisionId = decisionId;
+  if (input.provenance.sourceSelection) member.sourceSelection = input.provenance.sourceSelection;
   member.observedAt = observedAt;
   member.artifactDigest = input.provenance.artifactDigest;
   member.advisoryModified = decision.advisoryModified;
@@ -230,7 +238,7 @@ export class DeliveryRouting {
   constructor(private readonly db: PluginDatabaseClient, private readonly clock: () => Date = () => new Date()) {
     if (db.namespace !== DATABASE_NAMESPACE) throw new Error("Routing namespace does not match the packaged migration");
     this.table = `"${db.namespace}".delivery_routing`;
-    this.journal = new DecisionJournal(db);
+    this.journal = new DecisionJournal(db, clock);
   }
 
   async snapshot(companyId: string, repo: string): Promise<RoutingSnapshot> {
@@ -245,10 +253,26 @@ export class DeliveryRouting {
     const recorded = await this.journal.record(companyId, input);
     const latest = await this.journal.latest(companyId, recorded.decision.identity.originId);
     if (!latest) throw new Error("Decision history not readable; no delivery routing permitted");
+    if (latest.input_bundle.provenance.sourceSelection) throw new SourceAttention("source_selection_requires_fenced_write");
     const persistedAt = this.clock().toISOString();
     const repo = latest.decision_bundle.identity.repo;
-    return this.update(companyId, repo, snapshot => route(snapshot, companyId, latest.input_bundle,
-      latest.decision_bundle, latest.decision_id, persistedAt, relationship));
+    return this.update(companyId, repo, snapshot => {
+      if (snapshot.members.some(member => member.sourceSelection)) throw new SourceAttention("source_selection_requires_fenced_write");
+      return route(snapshot, companyId, latest.input_bundle, latest.decision_bundle, latest.decision_id, persistedAt, relationship);
+    });
+  }
+
+  /** Current lockfile decisions and routing are independently source-fenced; replay repairs a gap between them. */
+  async observeCurrent(selection: CurrentSource, input: FindingInput, relationship?: RemediationRelationship): Promise<RoutingResult> {
+    const selected = structuredClone(selection);
+    const recorded = await this.journal.recordCurrent(selected, input);
+    const latest = await this.journal.latest(selected.companyId, recorded.decision.identity.originId);
+    if (!latest || canonicalJson(latest.input_bundle.provenance.sourceSelection) !== canonicalJson(sourceSelection(selected))) {
+      throw new SourceAttention("current_decision_source_mismatch");
+    }
+    const persistedAt = this.clock().toISOString();
+    return this.update(selected.companyId, selected.source.repo, snapshot => route(snapshot, selected.companyId,
+      latest.input_bundle, latest.decision_bundle, latest.decision_id, persistedAt, relationship), selected);
   }
 
   /** Record member resolution only; this report-only API never closes a native issue. */
@@ -297,6 +321,7 @@ export class DeliveryRouting {
 
   private async update(
     companyId: string, repo: string, reduce: (snapshot: RoutingSnapshot) => RoutingResult | Promise<RoutingResult>,
+    selected?: CurrentSource,
   ): Promise<RoutingResult> {
     if (!companyId || !/^[\w.-]+\/[\w.-]+$/.test(repo) || repo !== repo.toLowerCase()) {
       throw new Error("Expected a company and canonical repository");
@@ -314,15 +339,21 @@ export class DeliveryRouting {
       const snapshot = structuredClone(row.bundle);
       const result = await reduce(snapshot);
       const bundle = canonicalJson(snapshot);
-      if (bundle === canonicalJson(row.bundle)) return result;
+      if (bundle === canonicalJson(row.bundle)) {
+        if (selected) await new SourcePollStore(this.db, this.clock).assertCurrent(selected);
+        return result;
+      }
       if (snapshot.members.length > 2000 || Buffer.byteLength(bundle) > 1048576) {
         throw new Error("Pilot routing capacity exceeded; evidence retained, no delivery effect permitted");
       }
+      const fence = selected ? sourceFence(selected, 5) : null;
       const updated = await this.db.execute(
         `UPDATE ${this.table} SET bundle = $4, revision = revision + 1
-         WHERE company_id = $1 AND repo = $2 AND revision = $3`, [companyId, repo, row.revision, bundle],
+         WHERE company_id = $1 AND repo = $2 AND revision = $3${fence ? ` AND ${fence.sql}` : ""}`,
+        [companyId, repo, row.revision, bundle, ...(fence?.params ?? [])],
       );
       if (updated.rowCount === 1) return result;
+      if (selected) await new SourcePollStore(this.db, this.clock).assertCurrent(selected);
     }
     throw new Error("Routing contention budget exhausted; replay journal without issuing host effects");
   }

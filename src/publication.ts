@@ -10,6 +10,7 @@ import { rescanEvidenceId, rescanRejection } from "./rescan.js";
 
 export type PublicationResult = DeliveryResult | { status: "deferred" | "attention"; reason: string };
 const priorities = ["critical", "high", "medium", "low"] as const;
+const sourceHold = { status: "attention" as const, reason: "Source-selected publication needs a source-fenced host-effect protocol; no issue effect permitted" };
 const indentedJson = (value: unknown) => JSON.stringify(value, null, 2).split("\n").map(line => `    ${line}`).join("\n");
 
 function membersFor(snapshot: RoutingSnapshot, container: RoutingContainer, companyId: string, repo: string): RoutingMember[] {
@@ -70,6 +71,8 @@ export class ContainerPublication {
     const container = snapshot.containers.find(item => item.originId === originId);
     if (!container) return { status: "attention", reason: "Missing original delivery container; never invent a replacement" };
     const members = membersFor(snapshot, container, companyId, repo);
+    // A pre-HTTP assertCurrent cannot make a remote effect atomic with poll changes.
+    if (members.some(member => member.sourceSelection)) return { ...sourceHold };
     const claim = await this.claims.read({ companyId, originId });
     if (!container.publishRequested && !weeklyDue && !claim) {
       return { status: "deferred", reason: "Weekly publication not due; evidence and original membership remain durable" };
@@ -78,6 +81,7 @@ export class ContainerPublication {
     for (const member of members) {
       const record = await this.journal.read(companyId, member.currentOriginId, member.decisionId);
       checkEvidence(record, member, companyId, repo);
+      if (record.input_bundle.provenance.sourceSelection) return { ...sourceHold };
       evidence.push({
         member,
         input: record.input_bundle,

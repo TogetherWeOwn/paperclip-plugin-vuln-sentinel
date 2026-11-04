@@ -41,10 +41,13 @@ Implemented:
 - Durable company/repository source-poll fences and explicit GitHub→raw-source
   synchronization, with separate cache-only and freshness-bounded source selection.
   Late older success/failure cannot replace a newer poll's selected source or hold.
+- Source-fenced local decision-head/routing writes, with same-statement source row
+  locking, DB poll-revision ordering and retained source-selection provenance.
+  Source-selected native publication is held for attention, not silently unfenced.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, source-fenced downstream decision and
-publication integration, verified scope/fix/severity enrichment,
+other lockfile formats and complete coverage, retained-source decision orchestration,
+source-fenced native publication integration, verified scope/fix/severity enrichment,
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
 configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
@@ -272,10 +275,10 @@ database messages. No decisions, native issues, resolution or LLM calls occur.
 These are per-repository **as-of** selections, not an atomic multi-repo view, a
 promise that GitHub has not changed since polling, or authorization for an effect.
 `assertCurrent` detects invalidated returned selections (including a newer poll
-selecting identical bytes), but check-then-write is not a transaction. The future
-worker must bind source refs/tokens to downstream writes and guard stale-result
-application atomically; merely calling `assertCurrent` before publication does not
-solve that race. No worker or source-fenced decision/publication path exists yet.
+selecting identical bytes), but check-then-write is not a transaction. The local
+journal/routing APIs below add same-statement locking. Native HTTP publication
+still needs a source-fenced effect protocol; merely calling `assertCurrent` before
+an HTTP request does not solve that race. There is no enabled worker.
 The low-level completion boundary trusts its adapter's link between poll and raw
 response; caller-supplied hashes/tokens do not authenticate that link. None of
 these internal typed APIs is exposed as a raw JSON callback endpoint.
@@ -283,6 +286,53 @@ these internal typed APIs is exposed as a raw JSON callback endpoint.
 REA angle: reuse the existing immutable journal and repository revision-CAS pattern,
 not plugin-state timestamps, a process-local mutex, or a second scheduler. Tests
 interleave PGlite callers and fake HTTP; they are not pooled-host or pilot evidence.
+
+### Source-fenced local decisions and routing
+
+`DecisionJournal.recordCurrent(selection, input)` and
+`DeliveryRouting.observeCurrent(selection, input, relationship?)` are explicit
+trusted-adapter boundaries for **lockfile** findings. They clone their inputs,
+validate the full retained selection, require matching repo/digest/artifact kind,
+and persist the token, immutable lockfile snapshot ID and DB poll revision in the
+input/decision provenance. These IDs bind evidence; they do not authenticate a
+producer or prove that arbitrary caller enrichment was derived from the raw data.
+The worker must still derive inputs from retained OSV/feed records, verify their
+freshness and coverage, and surface missing evidence as attention.
+
+Immutable history is inserted first. Advancing the finding head uses an
+`INSERT … SELECT` with a locking source-row predicate in the **same SQL statement**.
+Routing uses the same predicate in its revision-CAS `UPDATE`. Both predicates match
+the exact company/repo, ready-state bundle and poll revision and acquire
+`FOR UPDATE` on the source row. This serializes the dependent mutation against
+`begin`, `complete` and `fail`. A plain `EXISTS` or a separate `assertCurrent` would
+not supply that serialization. The database statement clock additionally rejects
+future completions or poll starts older than one day; application validation also
+checks freshness. A source can become obsolete immediately after the statement:
+these projections are as-of evidence, not a lasting publication permit.
+
+New poll revisions take precedence over observation timestamps, including a
+force-reset head or the same bytes selected by a new token. Within one poll,
+observation time and decision hash retain deterministic ordering. Migration 008
+adds the finding head's poll revision. Unfenced journal writes cannot replace a
+source-fenced head, and legacy `observe` refuses to route source-selected evidence
+or mutate a repository projection containing source-selected members. Those legacy
+APIs are not the current-source runtime path.
+
+Head and routing writes are individually fenced, **not one transaction together**.
+A crash or supersession can leave durable decision history/head without a routing
+change. A current replay repairs the projection; stale replay cannot apply it.
+No-op routing verifies the selection again before returning. Routing CAS retries
+retain competing same-source membership. Neither history insertion nor an empty
+OSV result resolves existing findings.
+
+`ContainerPublication.publish` returns attention for source-selected members (or
+source-selected journal evidence), before any native issue lookup/create/update.
+The existing fixture-only publication path is not authorization to bypass that
+hold. Coordinating source changes with indeterminate remote effects, and trusted
+rescan receipt integration, remain required before an enabled worker/pilot. Local
+PostgreSQL-engine tests inject races immediately before writes and exercise
+crash/lost-response replay; they do not prove pooled-host transport behavior or
+real pilot acceptance.
 
 ### Retained KEV and EPSS evidence, before runtime refresh
 

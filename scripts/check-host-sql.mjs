@@ -49,9 +49,15 @@ const db = {
     if (sql.includes("threat_snapshots")) {
       storedThreats.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
     }
-    if (sql.includes("source_polls")) {
-      if (sql.startsWith("INSERT")) storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]) };
-      else storedPoll = { revision: storedPoll.revision + 1, bundle: JSON.parse(params[3]) };
+    if (sql.startsWith(`INSERT INTO "${DATABASE_NAMESPACE}".source_polls`)) {
+      storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]) };
+    }
+    if (sql.startsWith(`UPDATE "${DATABASE_NAMESPACE}".source_polls`)) {
+      storedPoll = { revision: storedPoll.revision + 1, bundle: JSON.parse(params[3]) };
+    }
+    if (sql.startsWith(`INSERT INTO "${DATABASE_NAMESPACE}".decision_records`)) {
+      storedDecision = { company_id: params[0], origin_id: params[1], decision_id: params[2],
+        input_sha256: params[3], rules_version: params[4], input_bundle: JSON.parse(params[5]), decision_bundle: JSON.parse(params[6]) };
     }
     if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
       storedRouting = JSON.parse(params[3]);
@@ -114,6 +120,15 @@ await polls.cached(poll);
 await polls.complete(poll, lockfileId);
 const selected = await polls.current("fixture-company", configured);
 await polls.assertCurrent(selected);
+const fencedInput = structuredClone(input);
+fencedInput.repo = configured.repo;
+fencedInput.provenance.artifactDigest = selected.stored.lockfiles.artifactDigest;
+fencedInput.versionEvidence.artifactDigest = fencedInput.provenance.artifactDigest;
+const fencedRouting = new DeliveryRouting(db, () => new Date("2026-11-04T04:31:00Z"));
+await fencedRouting.observeCurrent(selected, fencedInput);
+if (!storedRouting.members.some(member => member.sourceSelection?.token === selected.token)) {
+  throw new Error("Host-validator fixture did not exercise source-fenced journal and routing writes");
+}
 const nextPoll = await polls.begin("fixture-company", configured);
 if ((await polls.cached(nextPoll))?.sourceSha !== "a".repeat(40)) throw new Error("Host-validator fixture did not exercise retained cache binding");
 await polls.fail(nextPoll, "fixture_failure");
