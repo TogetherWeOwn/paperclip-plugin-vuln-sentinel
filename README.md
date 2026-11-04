@@ -46,10 +46,12 @@ Implemented:
   Source-selected native publication is held for attention, not silently unfenced.
 - Explicit retained OSV/feed→source-fenced decision/routing orchestration, with exact
   parent references, current and historical freshness checks, and coverage attention.
+- Same-action all-version reduction for identical non-version context, retaining
+  every tuple/proof/trace in one deterministic journal revision before routing.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, all-version finding aggregation,
-source-fenced native publication integration, verified scope/fix/severity enrichment,
+other lockfile formats and complete coverage, source-fenced native publication
+integration, verified scope/fix/severity enrichment (including incompatible per-version contexts),
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
 configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
@@ -355,13 +357,37 @@ all finding aliases before any decision writes, and provenance retains the exact
 OSV snapshot ID as well as threat, lockfile and poll references. Replay does not
 re-stamp the observation or create new evidence merely because time passed.
 
-One remediation identity can currently select only one package-version input in
-this path. Multiple installed versions for that identity require an explicit
-all-version reducer before runtime integration. Until then, the entire invocation
-throws `multiple_versions_require_aggregation` before decision writes, retaining
-raw evidence. Hash ordering must not select an outside-range tuple over another
-installed affected version. This is attention, never safety or permission to
-silently discard a version. Other independent findings use the existing routing.
+`aggregateFindingInputs` groups same-action installed tuples by remediation identity
+before any writes. Singleton inputs and their existing rule hashes are unchanged.
+A multi-version `VersionSetInput` retains the identical common context and every
+version/range-proof tuple in a canonical sorted set. Reconstructing a tuple gives
+its full original input; `decide` runs the unchanged rules independently on every
+tuple. The one action then reduces affected over unknown over negative results,
+never letting an outside/withdrawn/not-affected tuple hide an actionable version.
+An affected result means at least one tuple is affected, not that every tuple is.
+The minimum actionable priority and fastest actionable delivery are retained.
+Remediation is proposed only when actionable tuples agree, and VEX only when all
+non-dropped tuples agree on the negative proposal. All-dropped sets have no VEX or
+delivery; a negative observation still never resolves a member.
+
+The journal stores one complete set/decision revision, with a versioned
+`1.0.0+all-versions.1` reducer, input hash and each tuple's decision hash,
+applicability and rule trace. Tuple enumeration order does not change the action
+or hash. No tuple-level decision head competes with the aggregate via timestamp
+or lexical hash ordering. Current poll/lockfile/OSV/feed references apply to every
+reconstructed input; the existing source fence covers the whole action head and
+routing mutation. Replay retains one member and its original container.
+
+This reducer deliberately requires **identical non-version context**, including
+scope, aliases/revisions, targets, fixes, function/platform/Go proof and provenance.
+Differing contexts require `version_set_context_mismatch` attention before writes,
+not an invented scope/absence/compatible-fix union. Duplicate versions, malformed
+or nested sets, unknown reducer versions and more than 2,000 tuple inputs are held.
+This covers the retained OSV path's conservative shared context; broader
+per-version enrichment needs an explicit compatible reducer before integration.
+The set covers observed advisory associations, not every unreported installed tuple
+or proof of repository/alias/runtime completeness. Immutable raw inventory/OSV
+coverage remains authoritative. No new native publication path is enabled.
 
 Each local mutation uses the existing source-fenced path. Source and freshness are
 checked again before return, including empty/no-op batches. This is not an atomic

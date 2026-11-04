@@ -1,5 +1,5 @@
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
-import { findingIdentity } from "./identity.js";
+import { aggregateFindingInputs } from "./version-set.js";
 import type { LockfileInventory } from "./inventory.js";
 import { DeliveryRouting, type RoutingResult } from "./routing.js";
 import { SourceJournal, type StoredOsvScan } from "./source-journal.js";
@@ -63,20 +63,14 @@ export class SourceDecisions {
     // Normalize and check the entire batch's raw/alias/feed coverage before writes.
     // No caller-supplied scope, range, fix or absence assertion enters this path.
     const inputs = enrichThreatInputs(retained.inputs, threat);
-    const origins = new Set<string>();
     for (const input of inputs) {
-      const origin = findingIdentity(input).originId;
-      // Identity is remediation-based, not version-based. Until an explicit
-      // all-version reducer exists, hash ordering must not let an outside tuple
-      // replace affected evidence for another installed version of that action.
-      if (origins.has(origin)) throw new SourceAttention("multiple_versions_require_aggregation");
-      origins.add(origin);
       input.provenance.osvSnapshotId = osvSnapshotId;
       input.provenance.threatSnapshotId = threatSnapshotId;
     }
+    const actions = aggregateFindingInputs(inputs);
     await this.polls.assertCurrent(selected);
     const results: RoutingResult[] = [];
-    for (const input of inputs) {
+    for (const input of actions) {
       this.fresh(retained.scan, selected, threat);
       results.push(await this.routing.observeCurrent(selected, input));
     }
@@ -92,7 +86,7 @@ export class SourceDecisions {
       status: "attention", lockfileSnapshotId: selected.snapshotId, osvSnapshotId, threatSnapshotId,
       inventory, attention,
       counters: { dependencies: inventory.dependencies.length, observations: retained.scan.osv.observations.length,
-        decisions: inputs.length, routingAttention: results.filter(result => result.status === "attention").length },
+        decisions: actions.length, routingAttention: results.filter(result => result.status === "attention").length },
       results,
     };
   }

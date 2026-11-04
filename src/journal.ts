@@ -2,7 +2,7 @@ import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { DATABASE_NAMESPACE } from "./claims.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { decide } from "./matcher.js";
-import type { Decision, FindingInput } from "./model.js";
+import type { Decision, DecisionInput } from "./model.js";
 import { sourceFence, sourceSelection } from "./source-fence.js";
 import { SourceAttention } from "./source-http.js";
 import { SourcePollStore, type CurrentSource } from "./source-polls.js";
@@ -13,7 +13,7 @@ export interface StoredDecision {
   decision_id: string;
   input_sha256: string;
   rules_version: string;
-  input_bundle: FindingInput;
+  input_bundle: DecisionInput;
   decision_bundle: Decision;
   observed_at: string | null;
   persisted_at: string;
@@ -29,13 +29,13 @@ export class DecisionJournal {
     this.findings = `"${db.namespace}".finding_records`;
   }
 
-  async record(companyId: string, input: FindingInput): Promise<{ decisionId: string; decision: Decision }> {
+  async record(companyId: string, input: DecisionInput): Promise<{ decisionId: string; decision: Decision }> {
     if (input.provenance.sourceSelection) throw new SourceAttention("source_selection_requires_fenced_write");
     return this.persist(companyId, structuredClone(input));
   }
 
   /** Retain evidence, but advance a current finding head only under the source row lock. */
-  async recordCurrent(selection: CurrentSource, input: FindingInput): Promise<{ decisionId: string; decision: Decision }> {
+  async recordCurrent(selection: CurrentSource, input: DecisionInput): Promise<{ decisionId: string; decision: Decision }> {
     const selected = structuredClone(selection);
     const bundle = structuredClone(input);
     if (bundle.repo.toLowerCase() !== selected.source.repo || bundle.provenance.artifactKind !== "lockfile"
@@ -47,7 +47,7 @@ export class DecisionJournal {
     return this.persist(selected.companyId, bundle, selected);
   }
 
-  private async persist(companyId: string, bundle: FindingInput, selected?: CurrentSource): Promise<{ decisionId: string; decision: Decision }> {
+  private async persist(companyId: string, bundle: DecisionInput, selected?: CurrentSource): Promise<{ decisionId: string; decision: Decision }> {
     const decision = decide(bundle);
     const decisionId = sha256(`${decision.rulesVersion}|${decision.inputSha256}`);
     const { originId, repo, remediationUnit, aliasGroup } = decision.identity;

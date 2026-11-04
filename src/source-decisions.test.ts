@@ -7,6 +7,8 @@ import { canonicalJson, sha256 } from "./identity.js";
 import { DecisionJournal } from "./journal.js";
 import { decide } from "./matcher.js";
 import { parseOsvRecord, type OsvSnapshot } from "./osv.js";
+import { ContainerPublication } from "./publication.js";
+import { FakeIssues } from "./test/issues.js";
 import { DeliveryRouting } from "./routing.js";
 import { SourceDecisions } from "./source-decisions.js";
 import { SourceJournal } from "./source-journal.js";
@@ -65,6 +67,32 @@ async function evidence(empty = false, unavailable = false) {
   const scan = await sources.recordOsv("company", selected.snapshotId, snapshot(empty, unavailable));
   const threatId = await feed();
   return { selected, scanId: scan.snapshotId, threatId };
+}
+async function multipleVersions(versions = ["1.2.3", "3.0.0"], unavailable = false, allOutside = false) {
+  const poll = await polls.begin("company", configured);
+  const lockfiles = sourceLockfiles();
+  const file = lockfiles.files[0]!;
+  const raw = JSON.parse(file.content);
+  delete raw.packages["node_modules/lib"];
+  versions.forEach((version, index) => {
+    raw.packages[`node_modules/other-${index}/node_modules/lib`] = {
+      version, resolved: `https://registry.npmjs.org/lib/-/lib-${version}.tgz`,
+    };
+  });
+  file.content = JSON.stringify(raw);
+  file.sha256 = sha256(file.content);
+  file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
+  lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
+  const id = await sources.recordLockfiles("company", lockfiles);
+  await polls.complete(poll, id);
+  const selected = await polls.current("company", configured);
+  const osv = snapshot(false, unavailable);
+  if (allOutside) osv.records[0] = parseOsvRecord({ ...osv.records[0]!.raw, affected: [{
+    package: { name: "lib", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "1.0.0" }] }],
+  }] }, "GHSA-fixture");
+  osv.observations = versions.map(version => ({ dependency: { ecosystem: "npm", package: "lib", version }, advisoryIds: ["GHSA-fixture"] }));
+  const scan = await sources.recordOsv("company", id, rehash(osv));
+  return { selected, scanId: scan.snapshotId, threatId: await feed() };
 }
 async function records(table: string) {
   return (await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows;
@@ -202,27 +230,88 @@ describe("retained source decision orchestration", () => {
     expect(await records("decision_records")).toEqual([]);
   });
 
-  it("holds colliding installed versions before hash ordering can hide affected evidence", async () => {
-    const poll = await polls.begin("company", configured);
-    const lockfiles = sourceLockfiles();
-    const file = lockfiles.files[0]!;
-    const raw = JSON.parse(file.content);
-    raw.packages["node_modules/other/node_modules/lib"] = {
-      version: "3.0.0", resolved: "https://registry.npmjs.org/lib/-/lib-3.0.0.tgz",
-    };
-    file.content = JSON.stringify(raw);
-    file.sha256 = sha256(file.content);
-    file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
-    lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
-    const id = await sources.recordLockfiles("company", lockfiles);
-    await polls.complete(poll, id);
-    const selected = await polls.current("company", configured);
-    const osv = snapshot();
-    osv.observations.push({ dependency: { ecosystem: "npm", package: "lib", version: "3.0.0" }, advisoryIds: ["GHSA-fixture"] });
-    const scan = await sources.recordOsv("company", id, rehash(osv));
-    expect(scan.inputs.map(input => input.versionEvidence.status)).toEqual(["affected", "outside"]);
-    await expect(matcher.observe(selected, scan.snapshotId, await feed())).rejects.toThrow("multiple_versions_require_aggregation");
-    expect(await records("decision_records")).toEqual([]);
+  it.each([false, true])("aggregates colliding installed versions into one complete action, urgent=%s", async urgent => {
+    const e = await multipleVersions(["3.0.0", "1.2.3"], urgent);
+    const result = await observe(e);
+    expect(result.counters).toMatchObject({ dependencies: 2, observations: 2, decisions: 1, routingAttention: 0 });
+    const state = await routing.snapshot("company", configured.repo);
+    expect(state.members).toHaveLength(1);
+    expect(state.containers).toHaveLength(1);
+    const member = state.members[0]!;
+    const stored = (await new DecisionJournal(db).latest("company", member.currentOriginId))!;
+    expect(stored.input_bundle).toMatchObject({ aggregationVersion: 1, versions: [
+      { version: "1.2.3", versionEvidence: { status: "affected" } },
+      { version: "3.0.0", versionEvidence: { status: urgent ? "unknown" : "outside" } },
+    ], provenance: { osvSnapshotId: e.scanId, threatSnapshotId: e.threatId,
+      sourceSelection: { token: e.selected.token, snapshotId: e.selected.snapshotId } } });
+    expect(stored.decision_bundle).toMatchObject({ applicability: urgent ? "affected" : "unknown", proposedVex: null,
+      versionDecisions: [{ version: "1.2.3", applicability: urgent ? "affected" : "unknown" },
+        { version: "3.0.0", applicability: urgent ? "affected" : "dropped" }] });
+    expect(stored.input_bundle).not.toHaveProperty("version");
+    expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
+    expect(member.applicability).toBe(urgent ? "affected" : "unknown");
+    const issues = new FakeIssues();
+    expect(await new ContainerPublication(db, issues).publish("company", configured.repo, member.deliveryOrigin!, "triage", true))
+      .toMatchObject({ status: "attention", reason: expect.stringContaining("source-fenced host-effect") });
+    expect(issues.lookups).toEqual([]);
+    expect(issues.creates).toEqual([]);
+    expect(await records("card_claims")).toEqual([]);
+  });
+
+  it("multi-version sequential/concurrent replay retains one full decision and original container", async () => {
+    const e = await multipleVersions();
+    await observe(e);
+    const before = await routing.snapshot("company", configured.repo);
+    clock += 1000;
+    await Promise.all(Array.from({ length: 6 }, () => observe(e)));
+    expect(await routing.snapshot("company", configured.repo)).toEqual(before);
+    expect(await records("decision_records")).toHaveLength(1);
+    expect(await records("finding_records")).toHaveLength(1);
+  });
+
+  it("all-version exclusion retains history without delivery or resolution", async () => {
+    const e = await multipleVersions();
+    await observe(e);
+    const before = await routing.snapshot("company", configured.repo);
+    clock += 1;
+    const next = await multipleVersions(undefined, false, true);
+    await observe(next);
+    const state = await routing.snapshot("company", configured.repo);
+    expect(state.members).toHaveLength(1);
+    expect(state.members[0]).toMatchObject({ applicability: "dropped", state: "unresolved", deliveryOrigin: before.members[0]!.deliveryOrigin });
+    expect(state.containers).toHaveLength(1);
+    expect(await records("decision_records")).toHaveLength(2);
+    expect(await records("card_claims")).toEqual([]);
+  });
+
+  it.each(["head", "route"])("multi-version source supersession before %s write cannot apply old membership", async phase => {
+    const e = await multipleVersions();
+    let raced = false;
+    const database: PluginDatabaseClient = { ...db, execute: async (sql, params) => {
+      if (!raced && (phase === "head" ? sql.includes(".finding_records") : sql.startsWith("UPDATE") && sql.includes(".delivery_routing"))) {
+        raced = true; await polls.begin("company", configured);
+      }
+      return db.execute(sql, params);
+    } };
+    await expect(new SourceDecisions(database, now).observe(e.selected, e.scanId, e.threatId))
+      .rejects.toThrow(/source_fence_rejected|current_source_pending/u);
+    expect(await records("decision_records")).toHaveLength(1);
+    expect((await routing.snapshot("company", configured.repo)).members).toEqual([]);
+    expect(await records("card_claims")).toEqual([]);
+  });
+
+  it("multi-version lost routing response replays the full action without tuple/head duplication", async () => {
+    const e = await multipleVersions();
+    let failed = false;
+    const database: PluginDatabaseClient = { ...db, execute: async (sql, params) => {
+      const result = await db.execute(sql, params);
+      if (!failed && sql.startsWith("UPDATE") && sql.includes(".delivery_routing")) { failed = true; throw new Error("lost response"); }
+      return result;
+    } };
+    await expect(new SourceDecisions(database, now).observe(e.selected, e.scanId, e.threatId)).rejects.toThrow("lost response");
+    await observe(e);
+    expect(await records("decision_records")).toHaveLength(1);
+    expect((await routing.snapshot("company", configured.repo)).members).toHaveLength(1);
   });
 
   it.each([false, true])("rechecks the source after final preflight, including empty=%s", async empty => {

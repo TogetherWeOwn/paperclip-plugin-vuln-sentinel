@@ -31,7 +31,7 @@ export function aliasClosure(advisories: Advisory[], seed: string): string[] {
   return [...connected].sort();
 }
 
-export function findingIdentity(input: FindingInput): FindingIdentity {
+export function findingIdentity(input: Pick<FindingInput, "repo" | "ecosystem" | "package" | "fixedVersion" | "aliases" | "advisoryId">): FindingIdentity {
   if (!/^[\w.-]+\/[\w.-]+$/.test(input.repo)) throw new Error("Expected canonical owner/repo");
   const aliases = aliasClosure(input.aliases, input.advisoryId);
   for (const component of [input.package, input.fixedVersion ?? "unfixed", ...aliases]) {

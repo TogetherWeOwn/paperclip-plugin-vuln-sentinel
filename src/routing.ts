@@ -2,7 +2,7 @@ import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { DATABASE_NAMESPACE, FINDING_ORIGIN_KIND, WEEKLY_ORIGIN_KIND } from "./claims.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { DecisionJournal } from "./journal.js";
-import type { Decision, FindingInput, Priority, SourceSelection } from "./model.js";
+import type { Decision, DecisionInput, Priority, SourceSelection } from "./model.js";
 import { sourceFence, sourceSelection } from "./source-fence.js";
 import { SourceAttention } from "./source-http.js";
 import { SourcePollStore, type CurrentSource } from "./source-polls.js";
@@ -16,7 +16,7 @@ export interface RoutingMember {
   findingId: string;
   identityKeys: string[];
   aliases: string[];
-  ecosystem: FindingInput["ecosystem"];
+  ecosystem: DecisionInput["ecosystem"];
   package: string;
   remediationUnit: string;
   currentOriginId: string;
@@ -133,7 +133,7 @@ function touch(snapshot: RoutingSnapshot, member: RoutingMember): void {
 }
 
 function route(
-  snapshot: RoutingSnapshot, companyId: string, input: FindingInput, decision: Decision,
+  snapshot: RoutingSnapshot, companyId: string, input: DecisionInput, decision: Decision,
   decisionId: string, persistedAt: string, relationship?: RemediationRelationship,
 ): RoutingResult {
   const identity = decision.identity;
@@ -248,7 +248,7 @@ export class DeliveryRouting {
     return rows[0]?.bundle ?? empty();
   }
 
-  async observe(companyId: string, input: FindingInput, relationship?: RemediationRelationship): Promise<RoutingResult> {
+  async observe(companyId: string, input: DecisionInput, relationship?: RemediationRelationship): Promise<RoutingResult> {
     // Decisions survive a routing crash, and replay repairs the routing projection.
     const recorded = await this.journal.record(companyId, input);
     const latest = await this.journal.latest(companyId, recorded.decision.identity.originId);
@@ -263,7 +263,7 @@ export class DeliveryRouting {
   }
 
   /** Current lockfile decisions and routing are independently source-fenced; replay repairs a gap between them. */
-  async observeCurrent(selection: CurrentSource, input: FindingInput, relationship?: RemediationRelationship): Promise<RoutingResult> {
+  async observeCurrent(selection: CurrentSource, input: DecisionInput, relationship?: RemediationRelationship): Promise<RoutingResult> {
     const selected = structuredClone(selection);
     const recorded = await this.journal.recordCurrent(selected, input);
     const latest = await this.journal.latest(selected.companyId, recorded.decision.identity.originId);

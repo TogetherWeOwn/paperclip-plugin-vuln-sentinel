@@ -1,6 +1,8 @@
 import { canonicalJson, findingIdentity, sha256 } from "./identity.js";
 import { RULES_VERSION } from "./model.js";
-import type { BoundEvidence, Decision, FindingInput, Priority, ProposedVex, Remediation } from "./model.js";
+import type { BoundEvidence, Decision, DecisionInput, FindingInput, Priority, ProposedVex, Remediation } from "./model.js";
+import { versionInputs } from "./version-set.js";
+import { SourceAttention } from "./source-http.js";
 
 const SLA = [1, 7, 30, 90] as const;
 const sameSet = (a: string[], b: string[]) =>
@@ -32,7 +34,38 @@ function proposedRemediation(input: FindingInput): Remediation | null {
   return command === null ? null : { kind: "command", command, package: pkg, fixedVersion };
 }
 
-export function decide(raw: FindingInput): Decision {
+export function decide(raw: DecisionInput): Decision {
+  if (!("versions" in raw)) {
+    if ("aggregationVersion" in raw) throw new SourceAttention("invalid_version_set");
+    return decideVersion(raw);
+  }
+  const input = structuredClone(raw);
+  const inputs = versionInputs(input);
+  const decisions = inputs.map(decideVersion);
+  // A negative tuple cannot suppress either affected evidence or residual unknown.
+  const rank = { affected: 0, unknown: 1, not_affected: 2, dropped: 3 };
+  const winner = [...decisions].sort((a, b) => rank[a.applicability] - rank[b.applicability])[0]!;
+  const actionable = decisions.filter(decision => decision.delivery !== "none");
+  const priority = Math.min(...(actionable.length ? actionable : decisions).map(decision => decision.priority)) as Priority;
+  const deliveryOrder = ["immediate", "finding", "weekly", "none"] as const;
+  const delivery = deliveryOrder.find(value => actionable.some(decision => decision.delivery === value)) ?? "none";
+  const proposedRemediation = actionable.length && actionable.every(decision =>
+    canonicalJson(decision.proposedRemediation) === canonicalJson(winner.proposedRemediation)) ? winner.proposedRemediation : null;
+  const negatives = decisions.filter(decision => decision.applicability !== "dropped");
+  const proposedVex = !actionable.length && negatives.length && negatives.every(decision =>
+    canonicalJson(decision.proposedVex) === canonicalJson(winner.proposedVex)) ? winner.proposedVex : null;
+  return {
+    ...winner, rulesVersion: `${RULES_VERSION}+all-versions.1`, inputSha256: sha256(canonicalJson(input)),
+    priority, slaDays: SLA[priority], delivery, proposedRemediation, proposedVex,
+    reasons: [...winner.reasons, "All installed tuples evaluated; affected then unknown outrank negative tuples. See per-version traces."],
+    versionDecisions: decisions.map((decision, index) => ({
+      version: inputs[index]!.version, inputSha256: decision.inputSha256,
+      applicability: decision.applicability, matchedRule: decision.matchedRule, trace: decision.trace,
+    })),
+  };
+}
+
+function decideVersion(raw: FindingInput): Decision {
   const input = structuredClone(raw);
   const identity = findingIdentity(input);
   const advisory = input.aliases.find(item => item.id === input.advisoryId);

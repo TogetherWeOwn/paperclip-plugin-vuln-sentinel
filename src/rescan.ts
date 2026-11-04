@@ -1,5 +1,5 @@
 import { canonicalJson, sha256 } from "./identity.js";
-import type { FindingInput } from "./model.js";
+import type { DecisionInput } from "./model.js";
 import type { RoutingMember } from "./routing.js";
 
 /** Trusted-adapter output, never a raw scanner callback or a user assertion. */
@@ -8,13 +8,13 @@ export interface RescanEvidence {
   repo: string;
   findingId: string;
   decisionId: string;
-  ecosystem: FindingInput["ecosystem"];
+  ecosystem: DecisionInput["ecosystem"];
   package: string;
   aliases: string[];
   advisoryModified: string | null;
   previousArtifactDigest: string;
   artifactDigest: string;
-  artifactKind: NonNullable<FindingInput["provenance"]["artifactKind"]>;
+  artifactKind: NonNullable<DecisionInput["provenance"]["artifactKind"]>;
   sourceRevision: string;
   startedAt: string;
   completedAt: string;
@@ -52,7 +52,7 @@ const same = (actual: string[], expected: string[]) => contains(actual, expected
 export const rescanEvidenceId = (evidence: RescanEvidence): string => sha256(canonicalJson(evidence));
 
 /** Return a hold reason; absence alone, including native Rust absence, is never proof. */
-export function rescanRejection(member: RoutingMember, input: FindingInput, evidence: RescanEvidence, now: string): string | null {
+export function rescanRejection(member: RoutingMember, input: DecisionInput, evidence: RescanEvidence, now: string): string | null {
   if (evidence.findingId !== member.findingId || evidence.decisionId !== member.decisionId
     || evidence.ecosystem !== member.ecosystem || evidence.package !== member.package
     || !contains(evidence.aliases, member.aliases) || evidence.advisoryModified !== member.advisoryModified) {

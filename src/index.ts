@@ -1,4 +1,5 @@
 export { decide } from "./matcher.js";
+export { aggregateFindingInputs, versionInputs } from "./version-set.js";
 export { ThreatFeeds, parseKev, enrichThreats, enrichThreatInputs, validateThreatSnapshot } from "./threat-feeds.js";
 export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./threat-feeds.js";
 export { ThreatJournal } from "./threat-journal.js";

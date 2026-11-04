@@ -156,6 +156,7 @@ if (enriched[0]?.provenance.threatSnapshotId !== threatId) throw new Error("Host
 const populatedContent = JSON.stringify({ lockfileVersion: 3, packages: {
   "": { dependencies: { lib: "1.2.3" } },
   "node_modules/lib": { version: "1.2.3", resolved: "https://registry.npmjs.org/lib/-/lib-1.2.3.tgz" },
+  "node_modules/parent/node_modules/lib": { version: "3.0.0", resolved: "https://registry.npmjs.org/lib/-/lib-3.0.0.tgz" },
 } });
 const populatedFile = { ...file, content: populatedContent, sha256: sha256(populatedContent),
   blobSha: createHash("sha1").update(`blob ${Buffer.byteLength(populatedContent)}\0`).update(populatedContent).digest("hex") };
@@ -167,7 +168,7 @@ const retainedPoll = await polls.begin("fixture-company", configured);
 await polls.complete(retainedPoll, populatedId);
 const retainedSelection = await polls.current("fixture-company", configured);
 const retainedOsv = { queriedAt: "2026-11-04T04:31:00Z", unavailableIds: [],
-  observations: [{ dependency: { ecosystem: "npm", package: "lib", version: "1.2.3" }, advisoryIds: ["GHSA-fixture"] }],
+  observations: ["1.2.3", "3.0.0"].map(version => ({ dependency: { ecosystem: "npm", package: "lib", version }, advisoryIds: ["GHSA-fixture"] })),
   records: [parseOsvRecord({ id: "GHSA-fixture", modified: "2026-11-01T00:00:00Z", affected: [{
     package: { ecosystem: "npm", name: "lib" }, versions: ["1.2.3"],
   }] }, "GHSA-fixture")],
@@ -175,7 +176,10 @@ const retainedOsv = { queriedAt: "2026-11-04T04:31:00Z", unavailableIds: [],
 const retainedScan = await sources.recordOsv("fixture-company", populatedId, { ...retainedOsv, snapshotSha256: sha256(canonicalJson(retainedOsv)) });
 const orchestrated = await new SourceDecisions(db, () => new Date("2026-11-04T04:31:00Z"))
   .observe(retainedSelection, retainedScan.snapshotId, threatId);
-if (orchestrated.counters.decisions !== 1 || storedDecision.input_bundle.provenance.osvSnapshotId !== retainedScan.snapshotId) {
-  throw new Error("Host-validator fixture did not exercise retained-source orchestration");
+if (orchestrated.counters.decisions !== 1 || orchestrated.counters.dependencies !== 2
+  || storedDecision.input_bundle.provenance.osvSnapshotId !== retainedScan.snapshotId
+  || storedDecision.input_bundle.versions?.length !== 2 || storedDecision.decision_bundle.versionDecisions?.length !== 2
+  || storedDecision.decision_bundle.applicability !== "unknown") {
+  throw new Error("Host-validator fixture did not exercise complete all-version retained-source orchestration");
 }
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

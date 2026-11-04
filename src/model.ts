@@ -83,6 +83,14 @@ export interface FindingInput {
   provenance: Provenance;
 }
 
+/** Same-action installed tuples sharing every non-version input and provenance field. */
+export interface VersionSetInput extends Omit<FindingInput, "version" | "versionEvidence"> {
+  aggregationVersion: 1;
+  versions: Array<Pick<FindingInput, "version" | "versionEvidence">>;
+}
+
+export type DecisionInput = FindingInput | VersionSetInput;
+
 export interface FindingIdentity {
   originId: string;
   repo: string;
@@ -117,4 +125,11 @@ export interface Decision {
   reasons: string[];
   provenance: Provenance;
   inputSha256: string;
+  versionDecisions?: Array<{
+    version: string;
+    inputSha256: string;
+    applicability: Applicability;
+    matchedRule: Decision["matchedRule"];
+    trace: number[];
+  }>;
 }
