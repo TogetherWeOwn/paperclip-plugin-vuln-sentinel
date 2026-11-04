@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, DependabotSource, DependabotJournal, SourceDecisions, SourceEffects, SourcePublicationStore, PublicationDiagnostics, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, DependabotSource, DependabotJournal, SourceDecisions, SourceEffects, SourcePublicationStore, PublicationDiagnostics, RepositoryHealth, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -249,5 +249,11 @@ const diagnostics = await new PublicationDiagnostics(db, () => new Date("2026-11
 if (diagnostics.source.status !== "observed" || !diagnostics.source.pinned || diagnostics.routing.status !== "observed"
   || diagnostics.claims.status !== "observed" || diagnostics.publication.enabled || diagnostics.publication.supportedMethods.length) {
   throw new Error("Host-validator fixture did not exercise all read-only diagnostics; publication must remain inadmissible");
+}
+const health = await new RepositoryHealth(db, () => new Date("2026-11-04T04:32:00Z")).read("fixture-company", configured);
+if (health.source.status !== "observed" || !health.source.summary.discoveryBound
+  || health.source.summary.inventory.dependencies !== 2 || health.pilot.startedAt !== null
+  || health.pilot.successfulScans !== null || health.diagnostics.publication.enabled) {
+  throw new Error("Host-validator fixture did not exercise disabled repository health; no pilot may be inferred");
 }
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

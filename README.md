@@ -119,6 +119,38 @@ uncertain claim, connect empty-lookup recovery or issue a second create. The exi
 exact-owner CAS is reusable cleanup machinery only; implementing a new authority map
 requires explicit compatibility review, not a callback or worker mirror.
 
+## Disabled repository health library
+
+`RepositoryHealth.read(companyId, configuredSource)` composes retained-current-source
+validation and the publication diagnostics above. It makes namespace queries only;
+no provider, scanner, issue transport, registration or verifier is invoked. It does
+not change any record, pin, claim, schema or SQL writer. There is no health endpoint,
+worker, manifest or scheduled job.
+
+The bounded output reports only a validated source's immutable reference, poll revision,
+start/completion times, age, discovery-binding presence, and inventory file/dependency/
+parse-issue counts. Counts describe retained inventory, **not** scan stages, successful
+cards or an enabled pilot. Raw lockfiles, package locators, poll/claim/pin tokens,
+proof history and error text are not returned. Missing, pending, failed, stale,
+corrupt or superseded evidence withholds the whole source summary; it never falls
+back to cache. Source selection is revalidated after diagnostics, including same-byte
+new-token races. Reads are not atomic; independent diagnostic observations can differ.
+A discovery binding or fully parsed configured paths proves neither actual manifest
+association nor exhaustive repository/dependency/runtime coverage.
+
+Every result remains `attention`, `library_only`, publication disabled/inadmissible,
+with no supported trusted methods. Pilot start and successful-scan count remain **null**,
+not fabricated zeroes or timestamps from offline work. Advisory/feed freshness and
+enabled-stage counters are explicitly not observed by this helper. Source availability,
+empty counts, absent pins or worker-written history cannot authorize publication,
+registration, claim recovery, pin cleanup, source switching, member resolution or a
+runtime safety conclusion. Runtime health/counter persistence, operator installation
+and real pilot acceptance remain unimplemented.
+
+REA angle: reuse the existing source-poll/immutable-journal validators and sanitized
+publication diagnostics rather than inventing a latest-health table, authority map,
+parallel scheduler or alternate issue system. Tests use in-memory PGlite only.
+
 ## Development
 
 Node 24 or later:

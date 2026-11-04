@@ -10,6 +10,8 @@ export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./thr
 export { ThreatJournal } from "./threat-journal.js";
 export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
+export { RepositoryHealth } from "./repository-health.js";
+export type { RepositoryHealthResult } from "./repository-health.js";
 export { RepositoryScan } from "./repository-scan.js";
 export type { RepositoryScanOptions, RepositoryScanResult } from "./repository-scan.js";
 export { SourceComparison } from "./source-comparison.js";
