@@ -38,10 +38,13 @@ Implemented:
   raw/derived graph checks and conservative connected-source normalization.
 - Read-only KEV and date-pinned EPSS adapters, all-alias enrichment and immutable
   company-scoped feed evidence before decisions. No API/model-version guessing.
+- Durable company/repository source-poll fences and explicit GitHub→raw-source
+  synchronization, with separate cache-only and freshness-bounded source selection.
+  Late older success/failure cannot replace a newer poll's selected source or hold.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, current-head/cache selection and
-runtime wiring of durable source storage, verified scope/fix/severity enrichment,
+other lockfile formats and complete coverage, source-fenced downstream decision and
+publication integration, verified scope/fix/severity enrichment,
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
 configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
@@ -129,9 +132,11 @@ Content requires a complete base64 UTF-8 file, exact byte size and matching Git
 blob SHA-1; each file also stores SHA-256. The aggregate artifact digest binds sorted
 paths/content hashes, separately from source commit identity. Returned snapshots
 are values to persist, not a mutable latest-head cache: overlapping reads cannot
-change another read's snapshot. `SourceJournal` can persist these immutable values;
-a later worker must wire it in and select the current head/cache references safely. Configured-path coverage is NOT proof that all
-lockfiles or the full dependency closure have been discovered or parsed. These
+change another read's snapshot. `SourceJournal` persists these immutable values;
+`RepositorySourceSync` wires it to fenced source selection, described below. No
+worker wires those selections into decisions/publication yet. Configured-path
+coverage is NOT proof that all lockfiles or the full dependency closure have been
+discovered or parsed. These
 hashes are content bindings, not authenticated deployment receipts.
 
 `OsvSource.query(validatedDependencies)` deduplicates package tuples and makes
@@ -206,8 +211,9 @@ limits never silently truncate into a completeness claim.
 
 `SourceJournal.recordLockfiles(companyId, snapshot)` durably saves raw bytes plus
 the inventory. Explicit immutable IDs can be read back for GitHub cache reuse;
-there is no mutable latest-head pointer, timestamp-based rollback or automatic
-current-head cache selection. `recordOsv(companyId, lockfileSnapshotId, snapshot)`
+this journal has no mutable latest-head pointer. The separate poll store below
+selects references without replacing journal history.
+`recordOsv(companyId, lockfileSnapshotId, snapshot)`
 requires an exact match between inventory query tuples and OSV observations,
 validates raw/normalized advisory equality, revision times and snapshot hashes,
 then persists raw OSV/query time/coverage before returning conservative inputs.
@@ -219,10 +225,64 @@ The company-scoped primary key and content-derived IDs make sequential/concurren
 replay idempotent. Lost responses can be replayed without overwriting old evidence;
 readback verifies the hash and parent source binding. Records are bounded at 16 MiB
 each, with no eviction. The eventual enabled runtime must add retention/capacity
-health and safe current-head selection, and persist these references before any
-decision journal/publication. A future parser-version change needs an explicit
+health and enforce source selection fences in downstream decision/publication
+writes, retaining the immutable references. A future parser-version change needs an explicit
 historical-inventory migration/replay strategy; readback never silently replaces
 stored coverage with new parser semantics.
+
+### Fenced source selection, before downstream runtime integration
+
+`SourcePollStore` (migration 007) separates **immutable HTTP cache material** from a
+**selected source as of the latest-started successful poll**. Before HTTP, `begin`
+uses repository/company-scoped revision-CAS to persist a fresh random poll token,
+normalized configured paths and start time. It invalidates the prior selection but
+retains its immutable snapshot reference only for cache reuse. DB ordering, not
+caller timestamps or lexical commit ordering, chooses the eligible poll. A real
+force-reset/default-branch change can therefore select an older commit without
+letting an older overlapping request roll back a newer observation.
+
+`complete` requires a durable, validated raw snapshot for the exact company, repo
+and configured path set. Its token/revision-predicated update selects that ID only
+if the attempt remains pending. Same-token/same-ID completion replay is idempotent;
+a different ID or a settled failed attempt cannot replace it. A late older success
+or failure cannot change a newer attempt. Starting another read is safe because
+these adapters only read providers; this is not lease takeover for native issues
+or other non-idempotent effects.
+
+`current` requires matching configuration, a ready token, valid retained bytes and
+a poll start no more than 24 hours old (callers can request a tighter bound). Future
+start/completion times, missing bytes and corrupt pointers fail closed. A second
+revision read detects supersession during source readback. Returned inventory
+attention/coverage is preserved: a selected source does not mean repository
+discovery, successful complete parsing, full closure or runtime completeness.
+A pending/failed poll cannot silently return an older source as current, even when
+that older source remains available as cache material. A crash after reservation
+leaves a pending fence until a fresh explicit poll; there is no automatic scheduler.
+
+`RepositorySourceSync.read(companyId, sources)` reserves every configured repo,
+loads validated cache material, invokes the existing one-call GraphQL/SHA/ETag
+reader, retains all resulting raw snapshots/inventories, and only then completes
+and reads back the selections. Provider/storage/selection failures return no batch
+result and hold that attempt's repositories. Failure to persist the attention state
+leaves the pending fence; it never restores older readiness. A committed completion
+with a lost response is conservatively held. The next fresh poll can recover using
+the retained cache. Errors retain only validated attention codes, not transport or
+database messages. No decisions, native issues, resolution or LLM calls occur.
+
+These are per-repository **as-of** selections, not an atomic multi-repo view, a
+promise that GitHub has not changed since polling, or authorization for an effect.
+`assertCurrent` detects invalidated returned selections (including a newer poll
+selecting identical bytes), but check-then-write is not a transaction. The future
+worker must bind source refs/tokens to downstream writes and guard stale-result
+application atomically; merely calling `assertCurrent` before publication does not
+solve that race. No worker or source-fenced decision/publication path exists yet.
+The low-level completion boundary trusts its adapter's link between poll and raw
+response; caller-supplied hashes/tokens do not authenticate that link. None of
+these internal typed APIs is exposed as a raw JSON callback endpoint.
+
+REA angle: reuse the existing immutable journal and repository revision-CAS pattern,
+not plugin-state timestamps, a process-local mutex, or a second scheduler. Tests
+interleave PGlite callers and fake HTTP; they are not pooled-host or pilot evidence.
 
 ### Retained KEV and EPSS evidence, before runtime refresh
 

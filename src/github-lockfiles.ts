@@ -59,21 +59,27 @@ function validateBlob(file: LockfileBlob): void {
   if (file.etag !== null) text(file.etag, "invalid_etag", 512);
 }
 
+export function normalizeRepositorySources(sources: RepositorySource[]): RepositorySource[] {
+  if (!Array.isArray(sources) || sources.length > 50) throw new SourceAttention("repository_capacity");
+  const normalized = sources.map(source => {
+    if (!Array.isArray(source.paths) || !source.paths.length || source.paths.length > 10) {
+      throw new SourceAttention("lockfile_path_capacity");
+    }
+    return { repo: repository(source.repo), paths: [...new Set(source.paths.map(path))].sort() };
+  });
+  if (new Set(normalized.map(source => source.repo)).size !== normalized.length) {
+    throw new SourceAttention("duplicate_repository");
+  }
+  return normalized;
+}
+
 /** One default-head GraphQL call; content reads use immutable SHAs, never branch names. */
 export class GitHubLockfiles {
   constructor(private readonly fetch: SourceFetch, private readonly token: string) {}
 
   async read(sources: RepositorySource[], previous: RepositoryLockfiles[] = []): Promise<RepositoryLockfiles[]> {
-    if (sources.length > 50 || previous.length > 50) throw new SourceAttention("repository_capacity");
-    const normalized = sources.map(source => {
-      if (!Array.isArray(source.paths) || !source.paths.length || source.paths.length > 10) {
-        throw new SourceAttention("lockfile_path_capacity");
-      }
-      return { repo: repository(source.repo), paths: [...new Set(source.paths.map(path))].sort() };
-    });
-    if (new Set(normalized.map(source => source.repo)).size !== normalized.length) {
-      throw new SourceAttention("duplicate_repository");
-    }
+    if (previous.length > 50) throw new SourceAttention("repository_capacity");
+    const normalized = normalizeRepositorySources(sources);
     const cache = new Map<string, RepositoryLockfiles>();
     for (const entry of previous) {
       const repo = repository(entry.repo);

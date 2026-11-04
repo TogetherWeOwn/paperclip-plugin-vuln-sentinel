@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceJournal, ThreatFeeds, ThreatJournal, parseKev, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -34,6 +34,7 @@ function parameters(sql, params) {
 let storedDecision;
 const storedSources = new Map();
 const storedThreats = new Map();
+let storedPoll;
 let storedRouting = { version: 1, members: [], containers: [], attention: [] };
 let routingRevision = 0;
 const db = {
@@ -48,6 +49,10 @@ const db = {
     if (sql.includes("threat_snapshots")) {
       storedThreats.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
     }
+    if (sql.includes("source_polls")) {
+      if (sql.startsWith("INSERT")) storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]) };
+      else storedPoll = { revision: storedPoll.revision + 1, bundle: JSON.parse(params[3]) };
+    }
     if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
       storedRouting = JSON.parse(params[3]);
       routingRevision++;
@@ -59,6 +64,7 @@ const db = {
     parameters(sql, params);
     count++;
     if (sql.includes("source_snapshots")) return storedSources.has(params[1]) ? [storedSources.get(params[1])] : [];
+    if (sql.includes("source_polls")) return storedPoll ? [structuredClone(storedPoll)] : [];
     if (sql.includes("threat_snapshots")) return storedThreats.has(params[1]) ? [storedThreats.get(params[1])] : [];
     if (sql.includes("delivery_routing")) {
       return [{ revision: routingRevision, bundle: storedRouting }];
@@ -101,6 +107,18 @@ const lockfileId = await sources.recordLockfiles("fixture-company", {
   artifactDigest: `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`,
 });
 await sources.readLockfiles("fixture-company", lockfileId);
+const polls = new SourcePollStore(db, () => new Date("2026-11-04T04:31:00Z"));
+const configured = { repo: "example/project", paths: [file.path] };
+const poll = await polls.begin("fixture-company", configured);
+await polls.cached(poll);
+await polls.complete(poll, lockfileId);
+const selected = await polls.current("fixture-company", configured);
+await polls.assertCurrent(selected);
+const nextPoll = await polls.begin("fixture-company", configured);
+if ((await polls.cached(nextPoll))?.sourceSha !== "a".repeat(40)) throw new Error("Host-validator fixture did not exercise retained cache binding");
+await polls.fail(nextPoll, "fixture_failure");
+const held = await polls.current("fixture-company", configured).then(() => false, error => error.code === "current_source_attention");
+if (!held) throw new Error("Host-validator fixture did not exercise failed-poll fencing");
 const osv = { queriedAt: "2026-11-04T04:30:00Z", observations: [], records: [], unavailableIds: [] };
 const scan = await sources.recordOsv("fixture-company", lockfileId, { ...osv, snapshotSha256: sha256(canonicalJson(osv)) });
 const storedScan = await sources.readOsv("fixture-company", scan.snapshotId);
