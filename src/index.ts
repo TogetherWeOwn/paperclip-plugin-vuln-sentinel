@@ -28,6 +28,8 @@ export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";
 export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";
 export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
+export { observeNpmManifest, NPM_MANIFEST_VERSION } from "./npm-manifest.js";
+export type { NpmManifestObservation } from "./npm-manifest.js";
 export { observeOsvFixes, OSV_FIXES_VERSION } from "./osv-fixes.js";
 export type { OsvFixObservation, OsvFixCandidate } from "./osv-fixes.js";
 export { cvssV3Base, observeOsvSeverity, OSV_SEVERITY_VERSION } from "./osv-severity.js";

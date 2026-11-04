@@ -117,6 +117,45 @@ REA angle: reuse the pinned SemVer library's precedence comparator and OSV's pub
 schema/pseudocode; validate canonical input explicitly rather than relying on its
 permissive parser or adding another matching engine.
 
+## Offline exact-tree npm manifest observations
+
+`observeNpmManifest(discovery, path, content, candidate?)` checks a regular tracked
+`package.json` against the exact retained repository discovery, Git blob identity
+and any reported UTF-8 byte size. It records source commit/tree/discovery and raw
+content identities. Duplicate JSON keys (including escaped duplicates), non-JSON
+syntax, malformed declarations, symlinks, submodules and mismatched bytes fail
+closed. It performs no fetch, package-manager/script execution or database write.
+
+Every `dependencies`, `devDependencies`, `optionalDependencies` and `peerDependencies`
+declaration remains separate. An optional stable npm candidate is compared by exact
+package name against a narrow declared-range subset: full canonical stable-version
+exact/caret/tilde/comparators, intersected by whitespace or joined by `||`. Partial,
+wildcard, tag, prerelease/build, alias, workspace, file, URL and Git specifiers stay
+unsupported/unknown. Other ecosystems and noncanonical candidates are rejected, not
+interpreted with npm semantics. Null comparison means that declaration was not queried.
+Per-row `matches`/`does_not_match` is **only declared range membership**, never an
+advisory applicability result or verified upgrade. Contradictory cross-section rows
+are retained rather than choosing override/peer semantics or suppressing a constraint.
+
+Every result stays `attention`, `scope: "unknown"`, `direct: null` and
+`compatibleFixVerified: false`. The observer does not associate installed tuples,
+lockfiles, workspaces, complete owner constraints, transitive paths or alias targets.
+Workspace/override/resolution/pnpm/peer metadata and bundled-dependency fields add
+explicit unevaluated attention. A missing declaration is not evidence that the package
+is absent, transitive, dev-only or safe. It proves no release availability, current
+source freshness/authenticity, compatible all-version fix, remediation, rescan resolution
+or publication permission. No result is fed to rule 6 or alters normalized fix fields.
+
+Input is bounded to 2 MiB, 10,000 declarations across all sections and 1 MiB expanded
+observation data, failing rather than truncating. Specifiers are limited to 256
+characters and eight sets of eight comparator tokens. Versioned content identities,
+deterministic replay/input immutability and all capacity holds have offline coverage;
+these are not real scans or pilot acceptance. Publication remains NOT ADMISSIBLE/off.
+
+REA angle: reuse existing exact-tree/blob checks, duplicate-aware JSON validation and
+the pinned SemVer library, without running package-manager resolution or adding a
+second matcher, source transport, authority mirror or runtime entrypoint.
+
 ## Offline reported OSV fixing boundaries
 
 `observeOsvFixes(snapshot, dependency)` validates the complete retained raw/derived
