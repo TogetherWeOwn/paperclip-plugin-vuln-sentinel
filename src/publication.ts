@@ -6,6 +6,7 @@ import { DecisionJournal } from "./journal.js";
 import type { StoredDecision } from "./journal.js";
 import { DeliveryRouting, weeklyOrigin } from "./routing.js";
 import type { RoutingContainer, RoutingMember, RoutingSnapshot } from "./routing.js";
+import { rescanEvidenceId, rescanRejection } from "./rescan.js";
 
 export type PublicationResult = DeliveryResult | { status: "deferred" | "attention"; reason: string };
 const priorities = ["critical", "high", "medium", "low"] as const;
@@ -38,6 +39,14 @@ function checkEvidence(record: StoredDecision | null, member: RoutingMember, com
     || record.decision_bundle.inputSha256 !== record.input_sha256
     || record.decision_bundle.provenance.artifactDigest !== member.artifactDigest) {
     throw new Error("Container member evidence missing or inconsistent; no publication permitted");
+  }
+  if (member.state === "resolved") {
+    const resolution = member.resolutions?.at(-1);
+    if (!resolution || resolution.evidenceId !== rescanEvidenceId(resolution.evidence)
+      || resolution.evidence.companyId !== companyId || resolution.evidence.repo !== repo
+      || rescanRejection(member, record.input_bundle, resolution.evidence, resolution.recordedAt)) {
+      throw new Error("Resolved member has no valid complete new-artifact rescan evidence");
+    }
   }
 }
 

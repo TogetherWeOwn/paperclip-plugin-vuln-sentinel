@@ -3,6 +3,8 @@ import { DATABASE_NAMESPACE, FINDING_ORIGIN_KIND, WEEKLY_ORIGIN_KIND } from "./c
 import { canonicalJson, sha256 } from "./identity.js";
 import { DecisionJournal } from "./journal.js";
 import type { Decision, FindingInput, Priority } from "./model.js";
+import { rescanEvidenceId, rescanRejection } from "./rescan.js";
+import type { RescanEvidence, ResolutionRecord } from "./rescan.js";
 
 export { WEEKLY_ORIGIN_KIND } from "./claims.js";
 const DAY = 86400000;
@@ -23,7 +25,9 @@ export interface RoutingMember {
   applicability: Decision["applicability"];
   priority: Priority;
   deadlineAt: string;
-  state: "unresolved" | "superseded";
+  state: "unresolved" | "superseded" | "resolved";
+  // Optional for existing version-1 rows; history is retained after reopening.
+  resolutions?: ResolutionRecord[];
   deliveryOrigin: string | null;
   weeklyEligibleAt: string | null;
   originalWeek: string | null;
@@ -49,6 +53,7 @@ export interface RoutingSnapshot {
   members: RoutingMember[];
   containers: RoutingContainer[];
   attention: Array<{ decisionId: string; originId: string; reason: string }>;
+  rescanHolds?: Array<ResolutionRecord & { reason: string }>;
 }
 
 export type RemediationRelationship =
@@ -141,10 +146,19 @@ function route(
     const priorIdentity = canonicalJson([member.identityKeys, member.aliases]);
     if (!member.identityKeys.includes(identity.originId)) member.identityKeys.push(identity.originId);
     member.aliases = [...new Set([...member.aliases, ...identity.aliases])].sort();
+    const resolution = member.resolutions?.at(-1);
+    if (member.state === "resolved" && (!resolution
+      || member.aliases.some(alias => !resolution.evidence.aliases.includes(alias)))) {
+      member.state = "unresolved";
+      touch(snapshot, member);
+    }
     if (!newer(observedAt, decisionId, member)) {
       if (priorIdentity !== canonicalJson([member.identityKeys, member.aliases])) touch(snapshot, member);
       return outcome(snapshot, member, "reused", "Same or older decision; original membership retained");
     }
+    // A new finding observation may contradict the rescan, even if it arrived late.
+    // Only identical/older replay above is inert; do not infer ordering from scan completion.
+    if (member.state === "resolved") member.state = "unresolved";
   } else {
     const related = snapshot.members.filter(item => item.ecosystem === input.ecosystem
       && item.package === input.package && intersects(item.aliases, identity.aliases));
@@ -233,6 +247,60 @@ export class DeliveryRouting {
     if (!latest) throw new Error("Decision history not readable; no delivery routing permitted");
     const persistedAt = this.clock().toISOString();
     const repo = latest.decision_bundle.identity.repo;
+    return this.update(companyId, repo, snapshot => route(snapshot, companyId, latest.input_bundle,
+      latest.decision_bundle, latest.decision_id, persistedAt, relationship));
+  }
+
+  /** Record member resolution only; this report-only API never closes a native issue. */
+  async applyRescan(companyId: string, repo: string, receipt: RescanEvidence): Promise<RoutingResult> {
+    const evidence = structuredClone(receipt);
+    const evidenceId = rescanEvidenceId(evidence);
+    const recordedAt = this.clock().toISOString();
+    return this.update(companyId, repo, async snapshot => {
+      const member = snapshot.members.find(item => item.findingId === evidence.findingId);
+      // A replay after reopening must not reactivate a historical resolution.
+      if (member?.resolutions?.some(item => item.evidenceId === evidenceId)) {
+        return outcome(snapshot, member, "reused", "Rescan already recorded; current member state retained");
+      }
+      let reason: string | null = null;
+      if (evidence.companyId !== companyId || evidence.repo !== repo) {
+        reason = "Rescan company or repository binding does not match";
+      } else if (!member || member.state !== "unresolved") {
+        reason = "Rescan needs a current unresolved member; supersession is not remediation";
+      } else {
+        const record = await this.journal.read(companyId, member.currentOriginId, member.decisionId);
+        if (!record || record.company_id !== companyId || record.origin_id !== member.currentOriginId
+          || record.decision_id !== member.decisionId || record.decision_bundle.identity.repo !== repo
+          || record.input_sha256 !== sha256(canonicalJson(record.input_bundle))
+          || record.decision_bundle.inputSha256 !== record.input_sha256
+          || record.input_bundle.provenance.artifactDigest !== member.artifactDigest) {
+          reason = "Current member decision evidence is missing or inconsistent";
+        } else {
+          reason = rescanRejection(member, record.input_bundle, evidence, recordedAt);
+        }
+      }
+      if (reason) {
+        snapshot.rescanHolds ??= [];
+        if (!snapshot.rescanHolds.some(item => item.evidenceId === evidenceId)) {
+          snapshot.rescanHolds.push({ evidenceId, evidence, recordedAt, reason });
+        }
+        return outcome(snapshot, member ?? null, "attention", reason);
+      }
+      if (!member) throw new Error("Missing validated rescan member");
+      member.resolutions ??= [];
+      member.resolutions.push({ evidenceId, evidence, recordedAt });
+      member.state = "resolved";
+      touch(snapshot, member);
+      return outcome(snapshot, member, "recorded", "Complete new-artifact rescan resolved only this member; no host closure performed");
+    });
+  }
+
+  private async update(
+    companyId: string, repo: string, reduce: (snapshot: RoutingSnapshot) => RoutingResult | Promise<RoutingResult>,
+  ): Promise<RoutingResult> {
+    if (!companyId || !/^[\w.-]+\/[\w.-]+$/.test(repo) || repo !== repo.toLowerCase()) {
+      throw new Error("Expected a company and canonical repository");
+    }
     await this.db.execute(
       `INSERT INTO ${this.table} (company_id, repo, bundle) VALUES ($1, $2, $3)
        ON CONFLICT (company_id, repo) DO NOTHING`, [companyId, repo, canonicalJson(empty())],
@@ -244,8 +312,7 @@ export class DeliveryRouting {
       const row = rows[0];
       if (!row || row.revision >= 2147483646) throw new Error("Routing revision unavailable; operator attention required");
       const snapshot = structuredClone(row.bundle);
-      const result = route(snapshot, companyId, latest.input_bundle, latest.decision_bundle,
-        latest.decision_id, persistedAt, relationship);
+      const result = await reduce(snapshot);
       const bundle = canonicalJson(snapshot);
       if (bundle === canonicalJson(row.bundle)) return result;
       if (snapshot.members.length > 2000 || Buffer.byteLength(bundle) > 1048576) {

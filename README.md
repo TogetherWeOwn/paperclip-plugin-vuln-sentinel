@@ -23,10 +23,13 @@ Implemented:
 - Explicit report-only container rendering/publication through the same guard,
   with monotonic revision/content checks, original-batch P0 promotion, and external
   closure-mismatch reopening. Tests use only fake native issues.
+- Validated complete-new-digest per-member rescan resolution, retained receipt
+  history, conservative reopening and unrelated resolved-member isolation. This is
+  a trusted-adapter library boundary, not a live scanner callback endpoint.
 
 Still required before installation/pilot acceptance: source ingestion and runtime
 validation, GitHub default-SHA/ETag caching, OSV querybatch and Dependabot switching,
-KEV/EPSS refresh, verified new-artifact resolution, manifest/jobs and weekly job
+KEV/EPSS refresh, live rescan receipt verification, manifest/jobs and weekly job
 scheduling, managed triage project, health/counters, operator runbook and installation,
 and two real consecutive report-only scans. No worker is wired to the explicit
 publication API; no weekly batch or per-finding issue has been emitted on a live host.
@@ -120,11 +123,10 @@ A crash or lost response is repaired by replay; the reducer performs no host eff
   remediation relationship from the trusted ingestion layer. A replacement creates
   a successor, retains historical membership, and marks the predecessor superseded,
   **not fixed**. Conflicting concurrent replacements require reconciliation.
-- Negative applicability remains a proposal. There is deliberately no API that
-  treats container closure, elapsed time, changed fix hints, or arbitrary new
-  artifact observations as proof of remediation. Verified new-artifact rescan
-  resolution is still unimplemented; external-closure reconciliation only reopens
-  the same container and never changes member state.
+- Negative applicability remains a proposal. Container closure, elapsed time,
+  changed fix hints, and arbitrary new artifact observations never establish
+  remediation. Only the separate complete-rescan receipt boundary below can
+  resolve an individual member; external closure never changes member state.
 
 This is a bounded pilot projection: at most 2,000 members and 1 MiB per repository,
 with at most 32 CAS attempts per invocation. Capacity/contention failures retain
@@ -133,6 +135,57 @@ Runtime health must surface those errors before installation. It is not a genera
 unbounded organization ledger; scaling requires a measured storage migration.
 Native issue links and creation guards are separate from this routing projection;
 `ContainerPublication` connects them through the shared origin-kind-aware guard.
+
+## Per-member rescan resolution
+
+`DeliveryRouting.applyRescan(companyId, canonicalRepo, RescanEvidence)` accepts
+**normalized, independently verified trusted-adapter evidence**, not raw scanner
+JSON or caller-supplied completeness assertions. There is no runtime endpoint or
+adapter yet. Hashes identify evidence; they do not authenticate its producer. The
+integration must verify report bytes, source/deployed digest and same-artifact
+lineage receipts, full relevant advisory/alias coverage and independent inventory
+completeness before constructing this value. Mutable tags, CI image IDs without
+production binding, ignored/VEX-filtered findings and empty native inventories
+are not valid absence proof. A lockfile receipt resolves only lockfile risk, never
+runtime exposure; artifact kind must match the original finding's provenance.
+Older records without a known kind remain held until a validated observation.
+
+The library checks the current finding/decision/package/ecosystem, every retained
+alias and exact advisory revision; a new immutable SHA-256 artifact of the same
+kind; immutable source revision; binding/lineage/completeness references; a scan
+started after the finding observation and completed by receipt recording time;
+a hashed successful absent report with the scanner's tool version; unfiltered
+complete lockfile coverage and exact build targets/tags. Runtime artifacts also
+require full dependency sources and independently proven runtime completeness.
+
+In particular, Rust native R within locked L, and lockfile-only O = L − R, are
+separate views. O is only “not reported in this native inventory”, never safe,
+dev-only, unreachable or absent from the executable. `runtime_completeness:
+not_proven`, subset accounting and sentinel names cannot resolve runtime risk.
+The complete locked development/CI/supply-chain view remains required. The
+producer's R/L/O receipt parser and deployed-digest verification are still pending.
+
+Accepted resolution plus full receipt/hash/history commits through the same
+repository revision-CAS as observation, affecting only its bound member. Rejected
+receipts are retained once in `rescanHolds` with attention reasons, without
+certifying resolution. Supersession is not resolution. Duplicate receipt replay,
+including a replay after reopening, cannot append another resolution or reactivate
+an old proof. Contention/capacity errors throw and require replay; they never issue
+a host effect. These histories share the existing 1 MiB pilot capacity limit.
+
+A newer finding observation, modified advisory or newly learned uncovered alias
+conservatively reopens that member in its original container. Identical/older
+replay is inert unless it expands uncovered aliases. A late observation is not
+silently discarded merely because it predates rescan completion. Previous proof
+history, original bucket/SLA and unrelated resolved members remain unchanged.
+
+Resolution does **not** close a native issue, dismiss an alert, commit VEX or
+perform remediation. Publication verifies resolved-member receipt consistency
+before rendering it. A new fully resolved revision refreshes an externally closed
+container without reopening it; unresolved members still trigger original-container
+reopening. Runtime health must surface held scans and any newer artifact with
+missing/ambiguous evidence as unknown/attention; historical resolution never
+establishes safety for a later artifact.
 
 ## Explicit container publication
 
@@ -164,8 +217,8 @@ or a body exceeding 128 KiB fails closed; it is never silently truncated.
 
 This is a tested library effect boundary, not an enabled plugin or batching/pilot
 acceptance. No scan, live publication, installation or configuration has run.
-Complete new-digest rescan resolution, preservation of unrelated resolved members,
-job integration and real two-run zero-duplicate evidence remain required.
+Live receipt validation/ingestion, job integration and real two-run zero-duplicate
+evidence remain required. Library rescan tests are not real pilot acceptance.
 
 ## Creation safety and reconciliation
 

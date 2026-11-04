@@ -259,6 +259,7 @@ export class CardDelivery {
       if (!Number.isFinite(modified) || modified <= timestamp(claim.advisory_modified)
         || input.advisoryModified === claim.advisory_modified) return this.result("reused", claim, "Unchanged, old, or unavailable advisory revision");
     }
+    const reopen = closed && (input.publicationRevision === undefined || input.reopenUnresolved === true);
     const token = randomUUID();
     if (!await call(() => this.claims.change(input, claim.claim_token, "linked", { state: "refreshing", claim_token: token }))) {
       return this.result("pending", claim, "Another caller is refreshing the linked issue");
@@ -267,17 +268,17 @@ export class CardDelivery {
     try {
       const updated = await call(() => this.issues.update(issue.id, {
         title: input.title, description: input.description, priority: input.priority,
-        ...(closed ? { status: "todo" as const } : {}),
+        ...(reopen ? { status: "todo" as const } : {}),
       }, input.companyId));
       if (updated.id !== issue.id || updated.companyId !== input.companyId
         || updated.originKind !== originKind(input) || updated.originId !== input.originId
-        || (closed && updated.status !== "todo")) {
+        || (reopen && updated.status !== "todo")) {
         return this.unknown(input, claim, "Issue refresh response inconsistent");
       }
       if (!await call(() => this.claims.change(input, token, "refreshing", {
         state: "linked", advisory_modified: input.advisoryModified, ...publication(input),
       }))) return this.unknown(input, claim, "Refresh link not confirmed");
-      return this.result(closed ? "reopened" : "updated", claim,
+      return this.result(reopen ? "reopened" : "updated", claim,
         input.publicationRevision === undefined ? "Refreshed existing issue for a newer advisory revision"
           : "Published container revision; external closure never certifies member remediation");
     } catch {

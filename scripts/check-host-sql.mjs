@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
+import { rescan } from "../src/test/rescans.ts";
 
 if (!process.argv[2]) {
   console.error("Usage: npm run check:host -- /absolute/path/to/installed/plugin-database.js");
@@ -30,12 +31,18 @@ function parameters(sql, params) {
   }
 }
 let storedDecision;
+let storedRouting = { version: 1, members: [], containers: [], attention: [] };
+let routingRevision = 0;
 const db = {
   namespace: DATABASE_NAMESPACE,
   execute: async (sql, params) => {
     validatePluginRuntimeExecute(sql, DATABASE_NAMESPACE);
     parameters(sql, params);
     count++;
+    if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
+      storedRouting = JSON.parse(params[3]);
+      routingRevision++;
+    }
     return { rowCount: 1 };
   },
   query: async (sql, params) => {
@@ -43,7 +50,7 @@ const db = {
     parameters(sql, params);
     count++;
     if (sql.includes("delivery_routing")) {
-      return [{ revision: 0, bundle: { version: 1, members: [], containers: [], attention: [] } }];
+      return [{ revision: routingRevision, bundle: storedRouting }];
     }
     return storedDecision && sql.includes("decision_records") ? [storedDecision] : [];
   },
@@ -57,11 +64,21 @@ await store.change(key, "fixture-token", "reserved", {
   published_revision: 1, published_sha256: "b".repeat(64),
 });
 const journal = new DecisionJournal(db);
-const { decision, decisionId } = await journal.record("fixture-company", finding());
+const input = finding();
+input.provenance.artifactKind = "lockfile";
+const { decision, decisionId } = await journal.record("fixture-company", input);
 await journal.read("fixture-company", decision.identity.originId, decisionId);
 await journal.latest("fixture-company", decision.identity.originId);
-storedDecision = { input_bundle: finding(), decision_bundle: decision, decision_id: decisionId };
-const routing = new DeliveryRouting(db);
-await routing.observe("fixture-company", finding());
-await routing.snapshot("fixture-company", decision.identity.repo);
+storedDecision = {
+  company_id: "fixture-company", origin_id: decision.identity.originId, input_sha256: decision.inputSha256,
+  input_bundle: input, decision_bundle: decision, decision_id: decisionId,
+};
+const routing = new DeliveryRouting(db, () => new Date("2026-11-05T05:00:00Z"));
+await routing.observe("fixture-company", input);
+const snapshot = await routing.snapshot("fixture-company", decision.identity.repo);
+const receipt = { ...rescan(snapshot.members[0], input), companyId: "fixture-company" };
+const result = await routing.applyRescan("fixture-company", decision.identity.repo, receipt);
+if (result.status !== "recorded" || storedRouting.members[0].state !== "resolved") {
+  throw new Error("Host-validator fixture did not exercise the rescan resolution update");
+}
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

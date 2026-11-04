@@ -16,6 +16,7 @@ export interface Advisory {
 export interface Provenance {
   observedAt: string;
   artifactDigest: string;
+  artifactKind?: "lockfile" | "image" | "go_binary" | "rust_binary" | "worker_bundle";
   source: { kind: "osv"; queriedAt: string; snapshotSha256: string | null }
     | { kind: "dependabot"; updatedAt: string };
   epss: { date: string; modelVersion: string; probability: number | null } | null;

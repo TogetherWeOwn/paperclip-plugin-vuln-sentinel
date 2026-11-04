@@ -3,6 +3,7 @@ export { aliasClosure, canonicalJson, findingIdentity, sha256 } from "./identity
 export { osvVersionStatus } from "./ranges.js";
 export { DecisionJournal } from "./journal.js";
 export { ContainerPublication } from "./publication.js";
+export type { RescanEvidence, ResolutionRecord } from "./rescan.js";
 export type { PublicationResult } from "./publication.js";
 export { DeliveryRouting, WEEKLY_ORIGIN_KIND, utcWeekStart, weeklyOrigin } from "./routing.js";
 export type { RoutingSnapshot, RoutingMember, RoutingContainer, RoutingResult, RemediationRelationship } from "./routing.js";
