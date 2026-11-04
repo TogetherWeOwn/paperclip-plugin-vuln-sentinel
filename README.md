@@ -44,9 +44,11 @@ Implemented:
 - Source-fenced local decision-head/routing writes, with same-statement source row
   locking, DB poll-revision ordering and retained source-selection provenance.
   Source-selected native publication is held for attention, not silently unfenced.
+- Explicit retained OSV/feed→source-fenced decision/routing orchestration, with exact
+  parent references, current and historical freshness checks, and coverage attention.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, retained-source decision orchestration,
+other lockfile formats and complete coverage, all-version finding aggregation,
 source-fenced native publication integration, verified scope/fix/severity enrichment,
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
 configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
@@ -296,8 +298,8 @@ validate the full retained selection, require matching repo/digest/artifact kind
 and persist the token, immutable lockfile snapshot ID and DB poll revision in the
 input/decision provenance. These IDs bind evidence; they do not authenticate a
 producer or prove that arbitrary caller enrichment was derived from the raw data.
-The worker must still derive inputs from retained OSV/feed records, verify their
-freshness and coverage, and surface missing evidence as attention.
+`SourceDecisions` below derives inputs from retained OSV/feed records and checks
+freshness/coverage; the worker must still wire it and surface attention.
 
 Immutable history is inserted first. Advancing the finding head uses an
 `INSERT … SELECT` with a locking source-row predicate in the **same SQL statement**.
@@ -333,6 +335,50 @@ rescan receipt integration, remain required before an enabled worker/pilot. Loca
 PostgreSQL-engine tests inject races immediately before writes and exercise
 crash/lost-response replay; they do not prove pooled-host transport behavior or
 real pilot acceptance.
+
+### Retained-source decision orchestration
+
+`SourceDecisions.observe(selection, osvSnapshotId, threatSnapshotId)` is an explicit
+library path, not a worker, HTTP endpoint, scan scheduler or pilot. It accepts only
+retained evidence references, never caller-normalized inputs. It validates the
+current company/repository selection, reads and revalidates the immutable OSV scan
+and inventory, requires the exact lockfile parent snapshot, and loads the same
+company's raw threat snapshot. An equal digest from another commit/snapshot is not
+interchangeable with the selected parent.
+
+OSV query time must follow source-poll completion, precede the retained observation
+and be no older than one day at execution. Even a later poll of identical bytes
+requires a query after its completion. Feed evidence must be fresh both at that
+retained observation and now. These checks include empty result sets: an old scan
+or feed cannot be made current by replaying its old timestamp. Enrichment checks
+all finding aliases before any decision writes, and provenance retains the exact
+OSV snapshot ID as well as threat, lockfile and poll references. Replay does not
+re-stamp the observation or create new evidence merely because time passed.
+
+One remediation identity can currently select only one package-version input in
+this path. Multiple installed versions for that identity require an explicit
+all-version reducer before runtime integration. Until then, the entire invocation
+throws `multiple_versions_require_aggregation` before decision writes, retaining
+raw evidence. Hash ordering must not select an outside-range tuple over another
+installed affected version. This is attention, never safety or permission to
+silently discard a version. Other independent findings use the existing routing.
+
+Each local mutation uses the existing source-fenced path. Source and freshness are
+checked again before return, including empty/no-op batches. This is not an atomic
+batch: supersession, expiration or storage failure can leave earlier individually
+fenced decisions/routing durable. Failure returns no completed batch result; a
+current replay repairs it without duplicating membership. A source can change
+immediately after return, so the result is not a native publication permit.
+
+The result deliberately remains `attention`: repository discovery, full dependency
+closure and runtime completeness are not proven by the configured inventory. It
+retains every file's parse issues, unavailable-alias attention, routing attention,
+and bounded dependency/observation/decision counters. Those counters count this
+invocation's evaluations, not new cards or a successful enabled pilot. Positive
+findings from valid parsed entries remain actionable local members despite other
+parse gaps. Empty results never remove/resolve prior membership or establish
+runtime absence. No native issue claim, lookup, create/update, remediation,
+dismissal, production effect, assignment, scanner or inference call occurs.
 
 ### Retained KEV and EPSS evidence, before runtime refresh
 

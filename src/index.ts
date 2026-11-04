@@ -4,6 +4,8 @@ export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./thr
 export { ThreatJournal } from "./threat-journal.js";
 export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
+export { SourceDecisions } from "./source-decisions.js";
+export type { SourceDecisionResult } from "./source-decisions.js";
 export { SourcePollStore, RepositorySourceSync } from "./source-polls.js";
 export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";

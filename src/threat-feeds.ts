@@ -196,14 +196,19 @@ export function enrichThreatInputs(inputs: FindingInput[], snapshot: ThreatSnaps
   return inputs.map(input => enrichValidated(input, snapshot));
 }
 
-function enrichValidated(input: FindingInput, snapshot: ThreatSnapshot): FindingInput {
-  const observedAt = timestamp(input.provenance.observedAt, "invalid_observation_time");
+/** Freshness of already validated evidence, including scans with no finding inputs. */
+export function assertThreatFreshness(snapshot: ThreatSnapshot, at: string): void {
+  const observedAt = timestamp(at, "invalid_observation_time");
   for (const fetchedAt of [snapshot.kev.fetchedAt, snapshot.epss.queriedAt]) {
     const age = Date.parse(observedAt) - Date.parse(fetchedAt);
     if (age < 0 || age > 2 * DAY) throw new SourceAttention("stale_or_future_threat_snapshot");
   }
   const scoreAge = Date.parse(observedAt) - Date.parse(`${snapshot.epss.date}T00:00:00Z`);
   if (scoreAge < 0 || scoreAge > 3 * DAY) throw new SourceAttention("stale_or_future_epss_date");
+}
+
+function enrichValidated(input: FindingInput, snapshot: ThreatSnapshot): FindingInput {
+  assertThreatFreshness(snapshot, input.provenance.observedAt);
   const aliases = aliasClosure(input.aliases, input.advisoryId);
   const requested = aliases.filter(value => CVE.test(value));
   if (requested.some(value => !snapshot.epss.requestedCves.includes(value))) throw new SourceAttention("epss_alias_coverage_mismatch");
