@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.3", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.4", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -111,10 +111,14 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
     add({ ecosystem: "npm", package: name, version: version(row.version) }, locator);
   }
   // Detect an explicitly referenced but missing installed entry, not just table syntax.
+  let referenceCount = 0;
   for (const [locator, row] of packages) {
     for (const kind of ["dependencies", "devDependencies", "optionalDependencies"]) {
       if (row[kind] === undefined) continue;
-      for (const [name] of entries(row[kind], "invalid_npm_dependency_map")) {
+      const refs = entries(row[kind], "invalid_npm_dependency_map");
+      referenceCount += refs.length;
+      if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
+      for (const [name] of refs) {
         npmName(name);
         let parent = locator;
         let found = false;
@@ -167,11 +171,15 @@ function readPnpm(content: string, add: Add, issues: Set<string>): number {
   }
   const snapshots = entries(root.snapshots === undefined ? {} : root.snapshots, "invalid_pnpm_snapshots");
   const snapshotKeys = new Set(snapshots.map(([key]) => key));
+  let referenceCount = 0;
   const references = (value: unknown, importer: boolean) => {
     const row = object(value, "invalid_pnpm_dependency_owner");
     for (const kind of ["dependencies", "devDependencies", "optionalDependencies"]) {
       if (row[kind] === undefined) continue;
-      for (const [name, value] of entries(row[kind], "invalid_pnpm_dependency_map")) {
+      const refs = entries(row[kind], "invalid_pnpm_dependency_map");
+      referenceCount += refs.length;
+      if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
+      for (const [name, value] of refs) {
         npmName(name);
         const ref = importer ? object(value, "invalid_pnpm_importer_dependency").version : value;
         if (typeof ref !== "string" || ref.length > 1024) throw new SourceAttention("invalid_pnpm_reference");

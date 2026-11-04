@@ -35,7 +35,7 @@ describe("immutable source journal", () => {
     const recorded = await journal.recordOsv("company", lockfileId, sourceOsv());
     expect(recorded.inputs).toHaveLength(1);
     expect(recorded.inputs[0]!.provenance).toMatchObject({
-      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.3", semver: "7.7.4" },
+      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.4", semver: "7.7.4" },
     });
     const saved = (await journal.readOsv("company", recorded.snapshotId))!;
     expect(saved.scan.osv).toEqual(sourceOsv());
@@ -85,7 +85,7 @@ describe("immutable source journal", () => {
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(0);
   });
 
-  it.each(["0.1.0", "0.1.1", "0.1.2"])("holds historical parser %s drift without rewriting evidence and appends a distinct current inventory", async parser => {
+  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3"])("holds historical parser %s drift without rewriting evidence and appends a distinct current inventory", async parser => {
     const lockfiles = sourceLockfiles();
     const id = await journal.recordLockfiles("company", lockfiles);
     const legacy = structuredClone((await journal.readLockfiles("company", id))!);
@@ -121,6 +121,32 @@ describe("immutable source journal", () => {
       ecosystem: "crates.io", package: "lib", version: "1.2.3", scope: "unknown", direct: null,
       locations: [{ path: "Cargo.lock", locator: "package[0]" }],
     }]);
+    for (const table of ["delivery_routing", "decision_records"]) {
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
+    }
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
+  });
+
+  it("retains aggregate reference-capacity attention through concurrent replay without policy writes", async () => {
+    const lockfiles = sourceLockfiles();
+    const file = lockfiles.files[0]!;
+    const root = JSON.parse(file.content);
+    const refs = Object.fromEntries(Array.from({ length: 5_001 }, (_, index) => [`lib${index}`, "*"]));
+    root.packages[""].dependencies = refs;
+    root.packages[""].optionalDependencies = refs;
+    file.content = JSON.stringify(root);
+    file.sha256 = sha256(file.content);
+    file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
+    lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
+    const before = structuredClone(lockfiles);
+    const ids = await Promise.all(Array.from({ length: 3 }, () => journal.recordLockfiles("company", lockfiles)));
+    expect(new Set(ids).size).toBe(1);
+    const stored = (await journal.readLockfiles("company", ids[0]!))!;
+    expect(stored.lockfiles).toEqual(before);
+    expect(stored.inventory.files[0]!.issues).toContain("inventory_entry_capacity");
+    expect(stored.inventory.coverage.configuredPathsParsed).toBe(false);
+    expect(stored.inventory.dependencies).toEqual([]);
+    expect(lockfiles).toEqual(before);
     for (const table of ["delivery_routing", "decision_records"]) {
       expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
     }

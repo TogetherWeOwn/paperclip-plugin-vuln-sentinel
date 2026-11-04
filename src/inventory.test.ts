@@ -278,6 +278,56 @@ describe("canonical locked versions", () => {
   });
 });
 
+describe("aggregate JavaScript lockfile reference limits", () => {
+  function fixture(format: "npm" | "pnpm", count: number, kind: string) {
+    const owners = Array.from({ length: Math.ceil(count / 100) }, (_, index) => {
+      const names = Array.from({ length: Math.min(100, count - index * 100) }, (_, dep) => [`lib${dep}`, format === "npm" ? "*" : { specifier: "npm:lib@1.2.3", version: "lib@1.2.3" }]);
+      return [format === "npm" ? (index ? `node_modules/owner${index}` : "") : `workspace${index}`, { [kind]: Object.fromEntries(names) }] as const;
+    });
+    if (format === "npm") {
+      const packages: Record<string, unknown> = Object.fromEntries(owners.map(([key, value]) => [key, { ...npmRow("owner"), name: "owner", ...value }]));
+      for (let index = 0; index < 100; index++) packages[`node_modules/lib${index}`] = npmRow(`lib${index}`);
+      return npm(packages);
+    }
+    return JSON.stringify({ lockfileVersion: "9.0", importers: Object.fromEntries(owners),
+      packages: { "lib@1.2.3": { resolution: { integrity: "sha512-abc=" } } }, snapshots: { "lib@1.2.3": {} } });
+  }
+
+  describe.each(["npm", "pnpm"] as const)("%s", format => {
+    const path = format === "npm" ? "package-lock.json" : "pnpm-lock.yaml";
+    it.each(["dependencies", "devDependencies", "optionalDependencies"])("accepts exactly 10,000 aggregate %s without promoting coverage", kind => {
+      const result = parseFile(path, fixture(format, 10_000, kind));
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies.length).toBeGreaterThan(0);
+      expect(result.dependencies.every(dep => dep.scope === "unknown" && dep.direct === null)).toBe(true);
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+    });
+    it.each(["dependencies", "devDependencies", "optionalDependencies"])("holds 10,001 aggregate %s instead of returning partial positives", kind => {
+      const content = fixture(format, 10_001, kind);
+      const input = snapshot({ [path]: content, "other/Cargo.lock": `version = 4\n${cargoPackage()}` });
+      const before = structuredClone(input);
+      const result = parseLockfileInventory(input);
+      expect(result.files.find(file => file.path === path)!.issues).toContain("inventory_entry_capacity");
+      expect(result.coverage.configuredPathsParsed).toBe(false);
+      expect(result.dependencies.map(dep => dep.ecosystem)).toEqual(["crates.io"]);
+      expect(input).toEqual(before);
+      expect(parseLockfileInventory(input)).toEqual(result);
+    });
+  });
+
+  it("shares the npm budget across declaration sections and the root/package owners", () => {
+    const root = JSON.parse(fixture("npm", 10_000, "dependencies"));
+    root.packages["node_modules/lib0"].optionalDependencies = { lib1: "*" };
+    expectAttention("package-lock.json", JSON.stringify(root), "inventory_entry_capacity");
+  });
+
+  it("shares the pnpm budget across importers and snapshots", () => {
+    const root = JSON.parse(fixture("pnpm", 10_000, "dependencies"));
+    root.snapshots["lib@1.2.3"].optionalDependencies = { lib: "1.2.3" };
+    expectAttention("pnpm-lock.yaml", JSON.stringify(root), "inventory_entry_capacity");
+  });
+});
+
 describe("pnpm v9 entries", () => {
   it("parses every registry tuple with scopes, aliases and peer suffixes", () => {
     const result = parseFile("pnpm-lock.yaml", pnpm);
