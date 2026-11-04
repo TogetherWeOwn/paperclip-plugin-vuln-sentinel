@@ -117,6 +117,47 @@ REA angle: reuse the pinned SemVer library's precedence comparator and OSV's pub
 schema/pseudocode; validate canonical input explicitly rather than relying on its
 permissive parser or adding another matching engine.
 
+## Offline exact-tree Cargo manifest observations
+
+`observeCargoManifest(discovery, path, content)` binds a regular tracked `Cargo.toml`
+to the retained repository commit/tree/discovery, Git blob and any reported UTF-8
+byte size. Invalid/duplicate TOML, mismatched bytes, lossy encoding, symlinks and
+submodules reject. It performs no fetch, Cargo/package-manager/script execution,
+source switching, database write or runtime integration.
+
+Package `dependencies`, `dev-dependencies` and `build-dependencies`, virtual/root
+`workspace.dependencies` and every explicit `target.<selector>` dependency section
+remain separate. Each row retains the declared name, explicit `package` rename hint,
+raw version requirement, `workspace = true` flag and source hints (`path`, `git`,
+`registry`, `registry-index`, `branch`, `tag`, `rev`). Omitted version/rename hints
+remain null. Inheritance is not resolved, target selectors are opaque, source hints
+are not verified, and conflicting rows/hints are not merged or chosen. Features,
+optional/default-feature flags and other dependency fields are explicitly unevaluated;
+root patch/replace/workspace/profile/feature influences retain attention. Legacy
+underscore dependency sections are explicitly held, not silently normalized. Raw content
+identity binds ignored fields as well as observed fields. This is a bounded declaration
+observation, **not Cargo manifest validity or dependency resolution**.
+
+No npm range semantics are applied to Cargo requirements. Every output remains
+`attention`, `scope: "unknown"`, `direct: null` and `compatibleFixVerified: false`.
+Neither a dev section nor a target selector establishes installed scope, and neither
+a rename hint nor an omitted source establishes crates.io identity. Empty declarations
+never prove absence. No lockfile/workspace/installed-owner association, all-version
+compatibility, release availability, source authenticity/freshness, closure, remediation,
+rescan resolution or publication permission is inferred. No matcher/rule-6 input changes.
+
+Limits: 2 MiB raw content, 10,000 declarations shared across all owners/sections,
+10,000 target owners (including empty ones), 256-character requirements,
+1,024-character target/source hints and 1 MiB output. Limits fail rather than truncate.
+Observer `1.0.0` and existing pinned `smol-toml` `1.9.1` are recorded independently
+of inventory parser provenance; existing stored inventories are unchanged. These pure
+offline tests are not actual-boundary integration or real-pilot acceptance. Publication
+remains NOT ADMISSIBLE/off; host authority AND groundwork remain deferred.
+
+REA angle: reuse retained discovery validation, the existing exact-byte/blob protocol,
+canonical content identities and pinned TOML parser, without introducing another source
+transport, dependency resolver, authority store or worker.
+
 ## Offline exact-tree npm manifest observations
 
 `observeNpmManifest(discovery, path, content, candidate?)` checks a regular tracked
