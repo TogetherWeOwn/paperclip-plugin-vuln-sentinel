@@ -30,9 +30,14 @@ Implemented:
 
 - Read-only GitHub default-SHA/ETag lockfile snapshots, content/hash validation,
   bounded OSV querybatch pagination/detail hydration and conservative normalization.
+- npm v2/v3, pnpm v9 and Cargo v3/v4 locked-entry inventories with explicit attention
+  states and no inferred runtime/development scope or full-closure completeness.
+- Immutable raw lockfile/inventory and OSV source journal, exact query-tuple coverage,
+  replay-safe inserts and readback validation before returning normalized inputs.
 
-Still required before installation/pilot acceptance: lockfile inventory parsing and
-coverage, recursive upstream/alias hydration, durable source snapshot/cache storage,
+Still required before installation/pilot acceptance: repository/manifest discovery,
+other lockfile formats and complete coverage, recursive upstream/alias hydration,
+current-head/cache selection and runtime wiring of durable source storage,
 verified scope/fix/severity enrichment, Dependabot permission switching, KEV/EPSS
 refresh, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
@@ -120,8 +125,8 @@ Content requires a complete base64 UTF-8 file, exact byte size and matching Git
 blob SHA-1; each file also stores SHA-256. The aggregate artifact digest binds sorted
 paths/content hashes, separately from source commit identity. Returned snapshots
 are values to persist, not a mutable latest-head cache: overlapping reads cannot
-change another read's snapshot. A later worker must persist immutable snapshots
-and select the current head safely. Configured-path coverage is NOT proof that all
+change another read's snapshot. `SourceJournal` can persist these immutable values;
+a later worker must wire it in and select the current head/cache references safely. Configured-path coverage is NOT proof that all
 lockfiles or the full dependency closure have been discovered or parsed. These
 hashes are content bindings, not authenticated deployment receipts.
 
@@ -146,9 +151,59 @@ continues to force residual unknown under the existing matcher. Full scope/fix/f
 and alias-closure enrichment is required before publishing pilot decisions. An
 empty query result never resolves an existing member or establishes runtime safety.
 Snapshots/raw advisory content must be durably retained before journaling decisions;
-that persistence and the inventory parsers are not wired yet. Typed cached/snapshot
-arguments are internal trusted values, not raw JSON ingestion endpoints; their
-hashes are not authentication and must not be exposed as caller authorization.
+`SourceJournal` provides that library boundary, but no worker wires it yet. Typed
+cached/snapshot arguments are internal trusted values, not raw JSON ingestion
+endpoints; their hashes are not authentication and must not be exposed as caller
+authorization.
+
+### Locked-entry inventory and durable source records
+
+`parseLockfileInventory(snapshot)` verifies content/blob hashes and the configured
+path-set digest before parsing npm `package-lock.json`/`npm-shrinkwrap.json` v2/v3,
+pnpm v9 and Cargo v3/v4. It deduplicates OSV query tuples while retaining every
+installed location and locked version. npm aliases require the real package name
+and matching official registry tarball identity; pnpm retains scoped/peer-version
+entries and checks importer/snapshot references. Cargo keeps the full registry
+locked set, never substitutes native R for locked L and never drops O = L − R.
+
+Local/workspace links, Git/custom sources, missing entries, unsupported formats and
+versions, malformed/duplicate keys, ambiguous versions and unverified registry
+identity require attention. A malformed file discards its partial parse; valid
+entries in other files remain available for positive observations. YAML aliases,
+merge/custom tags are not accepted. No package script, package manager, scanner or
+repository code runs during parsing. The patched YAML/TOML libraries are exact
+pins; dependency installation uses `--ignore-scripts`.
+
+`configuredPathsParsed` means only that the configured entries were parsed, NOT
+that every repository manifest/lockfile, optional target or dependency source was
+discovered. Repository discovery, full dependency closure and runtime completeness
+remain `not_proven`. Every dependency's scope is `unknown` and directness is unset:
+dev/platform flags, peer context, lockfile-only presence or native absence do not
+justify lowering priority, VEX or runtime resolution. Unknown sources/coverage must
+be surfaced by runtime health as attention, not an empty successful scan. Go,
+Python, other lockfile schemas, verified scope/directness and discovery remain
+unimplemented. Inventories are bounded at 10,000 entries / 2,000 unique query tuples;
+limits never silently truncate into a completeness claim.
+
+`SourceJournal.recordLockfiles(companyId, snapshot)` durably saves raw bytes plus
+the inventory. Explicit immutable IDs can be read back for GitHub cache reuse;
+there is no mutable latest-head pointer, timestamp-based rollback or automatic
+current-head cache selection. `recordOsv(companyId, lockfileSnapshotId, snapshot)`
+requires an exact match between inventory query tuples and OSV observations,
+validates raw/normalized advisory equality, revision times and snapshot hashes,
+then persists raw OSV/query time/coverage before returning conservative inputs.
+Both record and replay return the inventory/attention states alongside inputs.
+An empty result is never a rescan receipt. No decision, routing, issue effect or
+closure happens in this journal.
+
+The company-scoped primary key and content-derived IDs make sequential/concurrent
+replay idempotent. Lost responses can be replayed without overwriting old evidence;
+readback verifies the hash and parent source binding. Records are bounded at 16 MiB
+each, with no eviction. The eventual enabled runtime must add retention/capacity
+health and safe current-head selection, and persist these references before any
+decision journal/publication. A future parser-version change needs an explicit
+historical-inventory migration/replay strategy; readback never silently replaces
+stored coverage with new parser semantics.
 
 Both readers use fixed provider URLs, refuse redirects, sanitize transport errors,
 and perform no automatic retries. Each request is limited to 30 seconds / 4 MiB;

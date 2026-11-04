@@ -14,7 +14,11 @@
     "check": "npm run typecheck && npm test && npm run build",
     "check:host": "npm run build && node scripts/check-host-sql.mjs"
   },
-  "dependencies": { "semver": "7.7.4" },
+  "dependencies": {
+    "semver": "7.7.4",
+    "smol-toml": "1.9.1",
+    "yaml": "2.9.1"
+  },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.15",
     "@paperclipai/plugin-sdk": "2026.1023.0",

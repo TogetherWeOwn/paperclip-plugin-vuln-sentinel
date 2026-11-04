@@ -1,4 +1,8 @@
 export { decide } from "./matcher.js";
+export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
+export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
+export { SourceJournal } from "./source-journal.js";
+export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";
 export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
 export type { OsvDependency, OsvRecord, OsvSnapshot } from "./osv.js";
 export { GitHubLockfiles } from "./github-lockfiles.js";

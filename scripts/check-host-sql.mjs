@@ -1,7 +1,8 @@
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting } from "../dist/index.js";
+import { createHash } from "node:crypto";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceJournal, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -31,6 +32,7 @@ function parameters(sql, params) {
   }
 }
 let storedDecision;
+const storedSources = new Map();
 let storedRouting = { version: 1, members: [], containers: [], attention: [] };
 let routingRevision = 0;
 const db = {
@@ -39,6 +41,9 @@ const db = {
     validatePluginRuntimeExecute(sql, DATABASE_NAMESPACE);
     parameters(sql, params);
     count++;
+    if (sql.includes("source_snapshots")) {
+      storedSources.set(params[1], { snapshot_id: params[1], source_kind: params[2], repo: params[3], source_sha: params[4], bundle: JSON.parse(params[5]) });
+    }
     if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
       storedRouting = JSON.parse(params[3]);
       routingRevision++;
@@ -49,6 +54,7 @@ const db = {
     validatePluginRuntimeQuery(sql, DATABASE_NAMESPACE);
     parameters(sql, params);
     count++;
+    if (sql.includes("source_snapshots")) return storedSources.has(params[1]) ? [storedSources.get(params[1])] : [];
     if (sql.includes("delivery_routing")) {
       return [{ revision: routingRevision, bundle: storedRouting }];
     }
@@ -81,4 +87,17 @@ const result = await routing.applyRescan("fixture-company", decision.identity.re
 if (result.status !== "recorded" || storedRouting.members[0].state !== "resolved") {
   throw new Error("Host-validator fixture did not exercise the rescan resolution update");
 }
+const sources = new SourceJournal(db, () => new Date("2026-11-04T04:31:00Z"));
+const content = '{"lockfileVersion":3,"packages":{"":{}}}';
+const file = { path: "package-lock.json", content, sha256: sha256(content), etag: null,
+  blobSha: createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0`).update(content).digest("hex") };
+const lockfileId = await sources.recordLockfiles("fixture-company", {
+  repo: "example/project", sourceSha: "a".repeat(40), defaultBranch: "main", files: [file],
+  artifactDigest: `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`,
+});
+await sources.readLockfiles("fixture-company", lockfileId);
+const osv = { queriedAt: "2026-11-04T04:30:00Z", observations: [], records: [] };
+const scan = await sources.recordOsv("fixture-company", lockfileId, { ...osv, snapshotSha256: sha256(canonicalJson(osv)) });
+const storedScan = await sources.readOsv("fixture-company", scan.snapshotId);
+if (!storedScan || storedScan.inputs.length !== 0) throw new Error("Host-validator fixture did not exercise source replay");
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);
