@@ -10,15 +10,18 @@ export class SourceAttention extends Error {
 /** Fixed-provider callers choose the URL. No redirects, retries or unbounded bodies. */
 export async function sourceRequest(
   fetch: SourceFetch, url: string, init: RequestInit, maxBytes = 4 * 1024 * 1024, timeoutMs = 30_000,
-): Promise<{ status: number; etag: string | null; body: unknown }> {
+): Promise<{ status: number; etag: string | null; link: string | null; rateLimited: boolean; body: unknown }> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const request = async () => {
     const response = await fetch(url, { ...init, redirect: "error", signal: controller.signal });
     const etag = response.headers.get("etag");
+    const link = response.headers.get("link");
+    const rateLimited = response.status === 429 || (response.status === 403
+      && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")));
     if (response.status !== 200) {
       await response.body?.cancel();
-      return { status: response.status, etag, body: null };
+      return { status: response.status, etag, link, rateLimited, body: null };
     }
     if (!response.body) throw new SourceAttention("empty_response");
     const reader = response.body.getReader();
@@ -36,7 +39,7 @@ export async function sourceRequest(
       await reader.cancel().catch(() => undefined);
     }
     try {
-      return { status: response.status, etag, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown };
+      return { status: response.status, etag, link, rateLimited, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown };
     } catch {
       throw new SourceAttention("invalid_json");
     }

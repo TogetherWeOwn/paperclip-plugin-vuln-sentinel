@@ -35,6 +35,9 @@ Implemented:
   states and no inferred runtime/development scope or full-closure completeness.
 - Immutable raw lockfile/inventory and OSV source journal, exact query-tuple coverage,
   replay-safe inserts and readback validation before returning normalized inputs.
+- Read-only organization Dependabot alert traversal with bound cursor pagination,
+  separate unavailable/attention states and immutable company-scoped raw evidence.
+  This is not source switching, repository coverage or artifact-bound enrichment.
 - Bounded recursive OSV alias/upstream hydration, explicit unavailable documents,
   raw/derived graph checks and conservative connected-source normalization.
 - Read-only KEV and date-pinned EPSS adapters, all-alias enrichment and immutable
@@ -131,6 +134,51 @@ target or changed alias minimum produces a different identity; lineage and batch
 membership must be reconciled by the later delivery layer, not silently retagged.
 
 ## Read-only source adapters, before runtime integration
+
+### Organization Dependabot observations (not source switching)
+
+`DependabotSource.read(organization)` explicitly traverses the organization's alert
+endpoint once per cursor page, without state, scope, severity or repository filters.
+Only fixed `api.github.com` requests receive its injected token. Next links must retain
+that exact organization, endpoint, ordering and page size, with one nonempty `after`
+cursor and no extra parameters, credentials or fragment. Redirects and retries are
+refused. Cycles, repeated alert identities, partial-page failures, malformed records,
+empty pages with next cursors and exhausted budgets require attention, not partial
+success. Traversal is bounded to 20 pages / 2,000 alerts / 8 MiB retained evidence.
+
+Missing credentials and an initial non-rate-limited 403/404 return a distinct
+`unavailable` reason, not an empty alert set or proof that a permission grant is absent.
+OSV may continue independently while runtime health surfaces that reason. A 401,
+rate-limited 403/429, later-page 403/404, 304 without cache, or any other failure is
+attention. The adapter does not switch providers or infer an App grant from a response.
+The alert contract is based on the [GitHub REST documentation](https://docs.github.com/en/rest/dependabot/alerts#list-dependabot-alerts-for-an-organization),
+using the same API version as the existing GitHub adapters; all tests are fake HTTP.
+
+A successful traversal means only **observed alerts visible to that credential**.
+It does not prove all configured repositories are visible, that Dependabot is enabled
+on them, or a point-in-time consistent organization snapshot. Open, dismissed, fixed
+and auto-dismissed states are retained; none resolves a member or proves safe absence.
+The observations preserve exact alert/advisory revisions, known identifiers, package,
+manifest, reported scope/relationship, vulnerable range and patch hint. Null context
+stays null. A vulnerable range is not an installed version; a patch hint is not a
+verified compatible fix. No artifact/source-poll binding, full alias closure, independent
+manifest association or current freshness is established. Unsupported future schema
+values hold the read rather than silently weakening priority or coverage.
+
+`DependabotJournal` (migration 012) validates and retains raw pages, their exact cursor
+chain, query/completion interval and content hash under a company-scoped immutable ID.
+Sequential/concurrent replay does not overwrite history. Readback revalidates raw
+hashes/records before exposing a snapshot; failed or lost persistence responses return
+no successful reference. There is no mutable latest source, cache/ETag reuse, routing,
+negative decision, source-selection fence, HTTP callback or publication integration.
+Content hashes do not authenticate a producer. Retention/capacity health, verified
+repository coverage and artifact-bound source normalization/switching remain runtime
+prerequisites; this library is not enabled or pilot acceptance.
+
+REA angle: reused the shipped GitHub Upstream fixed-origin/redirect refusal and explicit
+rate-limit classification, plus this package's bounded HTTP and immutable namespace
+journal pattern. No scheduler, token broker or alternative issue system is introduced.
+
 
 `GitHubRepositoryDiscovery.read(repositories, previousDiscoveries)` gets default commit
 and root-tree identities for all selected repositories in one GraphQL call, validating

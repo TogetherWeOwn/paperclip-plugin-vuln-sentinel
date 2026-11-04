@@ -1,3 +1,6 @@
+export { DependabotSource, validateDependabotSnapshot } from "./dependabot.js";
+export type { DependabotRead, DependabotAlert, DependabotSnapshot } from "./dependabot.js";
+export { DependabotJournal } from "./dependabot-journal.js";
 export { decide } from "./matcher.js";
 export { aggregateFindingInputs, versionInputs } from "./version-set.js";
 export { ThreatFeeds, parseKev, enrichThreats, enrichThreatInputs, validateThreatSnapshot } from "./threat-feeds.js";

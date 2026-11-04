@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceDecisions, SourceEffects, SourcePublicationStore, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, DependabotSource, DependabotJournal, SourceDecisions, SourceEffects, SourcePublicationStore, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -34,6 +34,7 @@ function parameters(sql, params) {
 let storedDecision;
 const storedSources = new Map();
 const storedThreats = new Map();
+const storedDependabot = new Map();
 let storedPoll;
 let storedRouting = { version: 1, members: [], containers: [], attention: [] };
 let routingRevision = 0;
@@ -49,6 +50,9 @@ const db = {
     }
     if (sql.includes("threat_snapshots")) {
       storedThreats.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
+    }
+    if (sql.includes("dependabot_snapshots")) {
+      storedDependabot.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
     }
     if (sql.startsWith(`INSERT INTO "${DATABASE_NAMESPACE}".source_polls`)) {
       storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]), effect_barrier: null, effect_history: [] };
@@ -84,6 +88,7 @@ const db = {
     if (sql.includes("source_snapshots")) return storedSources.has(params[1]) ? [storedSources.get(params[1])] : [];
     if (sql.includes("source_polls")) return storedPoll ? [structuredClone(storedPoll)] : [];
     if (sql.includes("threat_snapshots")) return storedThreats.has(params[1]) ? [storedThreats.get(params[1])] : [];
+    if (sql.includes("dependabot_snapshots")) return storedDependabot.has(params[1]) ? [storedDependabot.get(params[1])] : [];
     if (sql.includes("delivery_routing")) {
       return [{ revision: routingRevision, bundle: storedRouting, effect_token: routingEffectToken }];
     }
@@ -229,4 +234,10 @@ const boundSelection = await polls.current("fixture-company", configured);
 await polls.assertCurrent(boundSelection);
 if (boundSelection.stored.discoverySnapshotId !== discoveryId) throw new Error("Host-validator fixture lost discovery binding");
 await effects.reserve(boundSelection, { executionId: "fixture-discovered", originId: "d".repeat(64), publicationRevision: 1, contentSha256: "e".repeat(64) });
+const dependabot = await new DependabotSource(async () => new Response("[]"), "fixture-token",
+  () => new Date("2026-11-04T04:31:00Z")).read("example");
+if (dependabot.status !== "available") throw new Error("Host-validator Dependabot fixture unavailable");
+const dependabotJournal = new DependabotJournal(db);
+const dependabotId = await dependabotJournal.record("fixture-company", dependabot.snapshot);
+await dependabotJournal.read("fixture-company", dependabotId);
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);
