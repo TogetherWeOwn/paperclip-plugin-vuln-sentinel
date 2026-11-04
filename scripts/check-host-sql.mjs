@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 
 if (!process.argv[2]) {
@@ -23,21 +23,29 @@ for (const file of (await readdir(directory)).filter(name => name.endsWith(".sql
     count++;
   }
 }
+function parameters(sql, params) {
+  const indexes = [...sql.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
+  if (Math.max(...indexes) !== params.length || new Set(indexes).size !== params.length) {
+    throw new Error("SQL parameter count mismatch");
+  }
+}
+let storedDecision;
 const db = {
   namespace: DATABASE_NAMESPACE,
   execute: async (sql, params) => {
     validatePluginRuntimeExecute(sql, DATABASE_NAMESPACE);
-    const indexes = [...sql.matchAll(/\$(\d+)/g)].map(match => Number(match[1]));
-    if (Math.max(...indexes) !== params.length || new Set(indexes).size !== params.length) {
-      throw new Error("SQL parameter count mismatch");
-    }
+    parameters(sql, params);
     count++;
     return { rowCount: 1 };
   },
-  query: async sql => {
+  query: async (sql, params) => {
     validatePluginRuntimeQuery(sql, DATABASE_NAMESPACE);
+    parameters(sql, params);
     count++;
-    return [];
+    if (sql.includes("delivery_routing")) {
+      return [{ revision: 0, bundle: { version: 1, members: [], containers: [], attention: [] } }];
+    }
+    return storedDecision && sql.includes("decision_records") ? [storedDecision] : [];
   },
 };
 const store = new ClaimStore(db);
@@ -51,4 +59,8 @@ const journal = new DecisionJournal(db);
 const { decision, decisionId } = await journal.record("fixture-company", finding());
 await journal.read("fixture-company", decision.identity.originId, decisionId);
 await journal.latest("fixture-company", decision.identity.originId);
+storedDecision = { input_bundle: finding(), decision_bundle: decision, decision_id: decisionId };
+const routing = new DeliveryRouting(db);
+await routing.observe("fixture-company", finding());
+await routing.snapshot("fixture-company", decision.identity.repo);
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

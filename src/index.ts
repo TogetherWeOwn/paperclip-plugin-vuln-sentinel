@@ -2,6 +2,8 @@ export { decide } from "./matcher.js";
 export { aliasClosure, canonicalJson, findingIdentity, sha256 } from "./identity.js";
 export { osvVersionStatus } from "./ranges.js";
 export { DecisionJournal } from "./journal.js";
+export { DeliveryRouting, WEEKLY_ORIGIN_KIND, utcWeekStart, weeklyOrigin } from "./routing.js";
+export type { RoutingSnapshot, RoutingMember, RoutingContainer, RoutingResult, RemediationRelationship } from "./routing.js";
 export type { StoredDecision } from "./journal.js";
 export { CardDelivery, ClaimStore, DATABASE_NAMESPACE, FINDING_ORIGIN_KIND } from "./claims.js";
 export type { Claim, DeliveryInput, DeliveryResult, IssuePort, RecoveryProof } from "./claims.js";

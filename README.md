@@ -18,13 +18,15 @@ Implemented:
   report-only creates, modified-advisory refresh/reopen, and fenced recovery.
 - Conservative OSV npm SEMVER range evaluation. Unsupported range syntax or
   ecosystems return `unknown`, never proof that a package is outside a range.
+- Durable two-level finding/container routing, UTC weekly buckets, sticky membership,
+  P0 promotion requests, alias redirects and evidenced replacement lineage.
 
 Still required before installation/pilot acceptance: source ingestion and runtime
 validation, GitHub default-SHA/ETag caching, OSV querybatch and Dependabot switching,
-KEV/EPSS refresh, weekly delivery semantics, manifest/jobs, managed triage project,
-health/counters, operator runbook and installation, and two real consecutive
-report-only scans. Weekly batch topology requires source-spec clarification; this
-core does not substitute per-finding issues for that delivery class.
+KEV/EPSS refresh, container rendering/publication/reopen orchestration, verified
+new-artifact resolution, manifest/jobs, managed triage project, health/counters,
+operator runbook and installation, and two real consecutive report-only scans.
+Routing persists publication intent only; it does not emit weekly native issues.
 
 ## Development
 
@@ -90,6 +92,44 @@ with `|`. The remediation unit is `ecosystem:package@target-fixed-version` (or
 `@unfixed` when no target is known). Components reject ambiguous separators. A new
 target or changed alias minimum produces a different identity; lineage and batch
 membership must be reconciled by the later delivery layer, not silently retagged.
+
+## Durable routing, before publication
+
+`DeliveryRouting.observe(companyId, input, relationship?)` journals the full input
+and decision before assigning a delivery container. Its repository-scoped DB row
+uses revision-predicated compare-and-swap, not plugin state or a process mutex.
+One successful update commits membership, lineage and alias redirects together.
+A crash or lost response is repaired by replay; the reducer performs no host effects.
+
+- Weekly origins hash a JSON tuple with an explicit versioned domain, company,
+  canonical repository and UTC Monday week start. They never reuse a member hash.
+  The first persisted weekly-eligible observation assigns the bucket using the
+  injected host clock. Replays, rollover and non-P0 delivery reclassification do
+  not migrate an existing delivery link. Individual SLA clocks do not reset.
+- Initial P0 uses a per-finding container with immediate publication intent. A
+  weekly member becoming P0 sets urgent/immediate intent on its original weekly
+  container, without a split issue or a second actionable membership. Container
+  deadlines never extend; member priorities and evidence remain independent.
+- An unambiguous alias-minimum change adds a retained identity-key redirect and
+  keeps the original delivery origin. A bridge joining multiple existing records
+  returns durable attention instead of silently merging, retagging or duplicating.
+- Changed fix targets require an evidenced same-action replacement or independent
+  remediation relationship from the trusted ingestion layer. A replacement creates
+  a successor, retains historical membership, and marks the predecessor superseded,
+  **not fixed**. Conflicting concurrent replacements require reconciliation.
+- Negative applicability remains a proposal. There is deliberately no API that
+  treats container closure, elapsed time, changed fix hints, or arbitrary new
+  artifact observations as proof of remediation. Verified new-artifact rescan
+  resolution and external-closure mismatch/reopen handling are still unimplemented.
+
+This is a bounded pilot projection: at most 2,000 members and 1 MiB per repository,
+with at most 32 CAS attempts per invocation. Capacity/contention failures retain
+journal evidence, throw an attention-required error and permit no issue effect.
+Runtime health must surface those errors before installation. It is not a general
+unbounded organization ledger; scaling requires a measured storage migration.
+Native issue links and creation guards remain separate from this routing projection;
+publication still needs a shared origin-kind-aware, monotonic container-revision
+protocol before the two APIs can safely be wired together.
 
 ## Creation safety and reconciliation
 
