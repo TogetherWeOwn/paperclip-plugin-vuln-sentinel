@@ -7,6 +7,8 @@ export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
 export { SourceDecisions } from "./source-decisions.js";
 export type { SourceDecisionResult } from "./source-decisions.js";
+export { SourceEffects } from "./source-effects.js";
+export type { SourceEffectIntent, SourceEffectBarrier } from "./source-effects.js";
 export { SourcePollStore, RepositorySourceSync } from "./source-polls.js";
 export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";

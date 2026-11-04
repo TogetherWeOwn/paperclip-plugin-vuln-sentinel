@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceDecisions, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceDecisions, SourceEffects, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -50,10 +50,17 @@ const db = {
       storedThreats.set(params[1], { snapshot_id: params[1], bundle: JSON.parse(params[2]) });
     }
     if (sql.startsWith(`INSERT INTO "${DATABASE_NAMESPACE}".source_polls`)) {
-      storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]) };
+      storedPoll ??= { revision: 0, bundle: JSON.parse(params[2]), effect_barrier: null, effect_history: [] };
     }
     if (sql.startsWith(`UPDATE "${DATABASE_NAMESPACE}".source_polls`)) {
-      storedPoll = { revision: storedPoll.revision + 1, bundle: JSON.parse(params[3]) };
+      if (sql.includes("SET bundle = $4")) {
+        storedPoll = { ...storedPoll, revision: storedPoll.revision + 1, bundle: JSON.parse(params[3]) };
+      } else if (sql.includes("SET effect_barrier = $3")) {
+        storedPoll.effect_barrier = JSON.parse(params[2]);
+      } else if (sql.includes("SET effect_barrier = NULL")) {
+        storedPoll.effect_barrier = null;
+        storedPoll.effect_history.push(...JSON.parse(params[3]));
+      }
     }
     if (sql.startsWith(`INSERT INTO "${DATABASE_NAMESPACE}".decision_records`)) {
       storedDecision = { company_id: params[0], origin_id: params[1], decision_id: params[2],
@@ -129,6 +136,17 @@ await fencedRouting.observeCurrent(selected, fencedInput);
 if (!storedRouting.members.some(member => member.sourceSelection?.token === selected.token)) {
   throw new Error("Host-validator fixture did not exercise source-fenced journal and routing writes");
 }
+const effects = new SourceEffects(db, () => new Date("2026-11-04T04:31:00Z"));
+const barrier = await effects.reserve(selected, {
+  executionId: "fixture-execution", originId: "b".repeat(64), publicationRevision: 1, contentSha256: "c".repeat(64),
+});
+const barrierHeld = await polls.begin("fixture-company", configured).then(() => false, error => error.code === "source_effect_pending");
+if (!barrierHeld) throw new Error("Host-validator fixture did not exercise source-effect hold");
+const released = await effects.release(barrier, async current => ({
+  previousClaimToken: current.token, terminalExecutionReceipt: "fixture-terminal",
+  settledHostEffectsReceipt: "fixture-settled", auditRef: "fixture-only-not-authentication",
+}));
+if (!released || storedPoll.effect_history.length !== 1) throw new Error("Host-validator fixture did not exercise source-effect settlement");
 const nextPoll = await polls.begin("fixture-company", configured);
 if ((await polls.cached(nextPoll))?.sourceSha !== "a".repeat(40)) throw new Error("Host-validator fixture did not exercise retained cache binding");
 await polls.fail(nextPoll, "fixture_failure");

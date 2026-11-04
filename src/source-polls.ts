@@ -39,7 +39,7 @@ interface PollState {
   cacheSnapshotId: string | null;
   attempt: Attempt | null;
 }
-interface Row { revision: number; bundle: PollState }
+interface Row { revision: number; bundle: PollState; effect_barrier: unknown | null }
 const empty = (): PollState => ({ version: 1, cacheSnapshotId: null, attempt: null });
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
 const source = (value: RepositorySource) => normalizeRepositorySources([value])[0]!;
@@ -57,7 +57,7 @@ export class SourcePollStore {
   private async read(companyId: string, repo: string): Promise<Row | null> {
     text(companyId, "invalid_company", 256);
     const rows = await this.db.query<Row>(
-      `SELECT revision, bundle FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
+      `SELECT revision, bundle, effect_barrier FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
     );
     const row = rows[0];
     if (!row) return null;
@@ -88,9 +88,10 @@ export class SourcePollStore {
   }
 
   private async change(companyId: string, repo: string, row: Row, bundle: PollState): Promise<boolean> {
+    if (row.effect_barrier != null) throw new SourceAttention("source_effect_pending");
     const result = await this.db.execute(
       `UPDATE ${this.table} SET bundle = $4, revision = revision + 1
-       WHERE company_id = $1 AND repo = $2 AND revision = $3`,
+       WHERE company_id = $1 AND repo = $2 AND revision = $3 AND effect_barrier IS NULL`,
       [companyId, repo, row.revision, canonicalJson(bundle)],
     );
     return result.rowCount === 1;

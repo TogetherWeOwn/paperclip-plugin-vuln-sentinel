@@ -589,6 +589,44 @@ acceptance. No scan, live publication, installation or configuration has run.
 Live receipt validation/ingestion, job integration and real two-run zero-duplicate
 evidence remain required. Library rescan tests are not real pilot acceptance.
 
+## Source-effect barrier primitive (publication remains held)
+
+`SourceEffects.reserve(currentSource, intent)` implements the **database half** of
+cross-HTTP fencing. It atomically pins the exact ready source row with a unique
+barrier token, an execution reference and the proposed origin/revision/body hash.
+The existing full retained-source validation runs first; the reserving UPDATE then
+matches and locks the exact poll bundle/revision and checks database-time freshness.
+It reads back its exact durable token/content, including after a lost write response.
+A failed read grants no ownership. Another reservation cannot take over that row.
+
+Every `SourcePollStore` mutation now requires `effect_barrier IS NULL` in the same
+UPDATE as its revision CAS. Thus either a new poll wins before reservation and the
+old reservation fails, or reservation wins and the new poll cannot advance. This
+also prevents same-token failure from invalidating a pinned ready source. The
+barrier is scoped to company/repository, not a process-local lock or a transaction
+held open across HTTP. Other companies/repositories can continue independently.
+No expiry, stale age, worker termination or empty issue lookup releases it.
+
+`SourceEffects.release(barrier, verifySettled)` requires a trusted integration
+verifier to independently bind **terminal execution and settled host effects** to
+that exact barrier token. A null/mismatched/incomplete proof holds the barrier.
+A conditional single-row UPDATE appends the barrier/proof/release-time audit and
+clears the pin together. Concurrent release appends once; an old token cannot clear
+a subsequent barrier. A lost release response is uncertain, never permission to
+repeat an issue effect. Malformed or over-1-MiB audit history holds rather than
+silently discarding receipts. The history limit needs operator-facing health and a
+reviewed archival path before sustained operation.
+
+**This does not yet enable native publication.** Intent hashes are identifiers,
+not authentication or proof of current container contents. The primitive does not
+freeze routing, bind the rendered body to all member decisions, authorize dispatch,
+prevent a late sender after settlement, or implement a trusted runtime verifier.
+The next integration must enforce those boundaries, recheck freshness before
+sending, and keep ambiguous requests pinned until independently settled. Fixture
+proof strings test the callback contract only; they are not host-effect receipts.
+`ContainerPublication` still returns attention for every source-selected member
+or journal record, before all native issue lookups/creates/updates.
+
 ## Creation safety and reconciliation
 
 `ClaimStore` uses the installed SDK's `PluginDatabaseClient`; `CardDelivery` accepts
