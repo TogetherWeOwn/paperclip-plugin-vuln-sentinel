@@ -8,6 +8,8 @@ export { aggregateFindingInputs, versionInputs } from "./version-set.js";
 export { ThreatFeeds, parseKev, enrichThreats, enrichThreatInputs, validateThreatSnapshot } from "./threat-feeds.js";
 export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./threat-feeds.js";
 export { ThreatJournal } from "./threat-journal.js";
+export { observeRustInventory } from "./rust-inventory.js";
+export type { CrateTuple, RustInventoryReports, RustInventoryObservation } from "./rust-inventory.js";
 export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
 export { RepositoryHealth } from "./repository-health.js";

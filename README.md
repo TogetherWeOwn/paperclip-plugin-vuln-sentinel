@@ -151,6 +151,34 @@ REA angle: reuse the existing source-poll/immutable-journal validators and sanit
 publication diagnostics rather than inventing a latest-health table, authority map,
 parallel scheduler or alternate issue system. Tests use in-memory PGlite only.
 
+## Offline Rust producer observations
+
+`observeRustInventory` accepts retained reconciliation, native Syft and Grype JSON
+bytes and expected source/image/config identities. It checks report hashes, native
+cataloger/tuple consistency, exact R ⊆ L and O = L − R accounting, counts, image
+source consistency and reported suppression. Missing, malformed, duplicated,
+over-capacity, inconsistent or unsupported evidence throws a sanitized attention
+error; nothing is truncated into a successful empty inventory. Multiple installed
+versions remain separate. Positive Grype match counts are preserved, not interpreted
+as a policy verdict.
+
+An optional independent `Cargo.lock` must match both the claimed byte hash and the
+complete unique L tuple set. Without it, `lockfileComparison` is `not_observed`:
+the producer's L array and hash cannot verify themselves. Even `matched` is only
+byte/set consistency, not authenticated build provenance. O means **lockfile-only /
+not reported in this native inventory**, never safe, dev-only, unreachable or absent
+from the executable. Complete lockfile development/CI/supply-chain findings remain.
+
+Every output stays `attention`, unauthenticated, resolution-ineligible, runtime
+completeness unproven and deployed binding unproven. Tool versions are observations,
+not verified toolchain pins. Scanner execution/exit status, configuration and policy,
+expected binary metadata, build target, provenance authenticity, freshness and actual
+deployment/completeness evidence still require independent verification. No trusted
+receipt, `RescanEvidence`, decision input, VEX or publication permit is produced.
+This pure offline helper makes no network/DB/issue calls and changes no records,
+pins, claims, schema, SQL writers or runtime integration. No scanner runs or pilot
+acceptance are implied by reading already-preserved reports.
+
 ## Development
 
 Node 24 or later:
