@@ -7,8 +7,14 @@ import type { StoredDecision } from "./journal.js";
 import { DeliveryRouting, weeklyOrigin } from "./routing.js";
 import type { RoutingContainer, RoutingMember, RoutingSnapshot } from "./routing.js";
 import { rescanEvidenceId, rescanRejection } from "./rescan.js";
+import { sourceSelection } from "./source-fence.js";
+import type { SourceEffectBarrier } from "./source-effects.js";
+import { SourceAttention } from "./source-http.js";
+import { SourcePollStore, type CurrentSource } from "./source-polls.js";
+import { SourcePublicationStore } from "./source-publication.js";
 
 export type PublicationResult = DeliveryResult | { status: "deferred" | "attention"; reason: string };
+export interface SourcePublicationResult { result: PublicationResult; barrier: SourceEffectBarrier | null }
 const priorities = ["critical", "high", "medium", "low"] as const;
 const sourceHold = { status: "attention" as const, reason: "Source-selected publication needs a source-fenced host-effect protocol; no issue effect permitted" };
 const indentedJson = (value: unknown) => JSON.stringify(value, null, 2).split("\n").map(line => `    ${line}`).join("\n");
@@ -57,7 +63,7 @@ export class ContainerPublication {
   private readonly journal: DecisionJournal;
   private readonly claims: ClaimStore;
   private readonly delivery: CardDelivery;
-  constructor(db: PluginDatabaseClient, issues: IssuePort, deadlineMs = 240_000) {
+  constructor(private readonly db: PluginDatabaseClient, private readonly issues: IssuePort, private readonly deadlineMs = 240_000) {
     this.routing = new DeliveryRouting(db);
     this.journal = new DecisionJournal(db);
     this.claims = new ClaimStore(db);
@@ -66,13 +72,62 @@ export class ContainerPublication {
 
   /** The host's existing job decides when weekly publication is due; P0 bypasses it. */
   async publish(companyId: string, repo: string, originId: string, projectId: string, weeklyDue = false): Promise<PublicationResult> {
-    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo !== repo.toLowerCase()) throw new Error("Expected a canonical repository");
     const snapshot = await this.routing.snapshot(companyId, repo);
+    const input = await this.prepare(snapshot, companyId, repo, originId, projectId, weeklyDue);
+    return "status" in input ? input : this.delivery.ensure(input);
+  }
+
+  /** Internal trusted-runtime path. Never reuse a barrier to resume dispatch.
+   * Even a reused/no-effect result retains its pins until independent settlement.
+   */
+  async publishCurrent(selection: CurrentSource, originId: string, projectId: string, executionId: string, weeklyDue = false): Promise<SourcePublicationResult> {
+    const selected = structuredClone(selection);
+    await new SourcePollStore(this.db).assertCurrent(selected);
+    const snapshot = await this.routing.snapshot(selected.companyId, selected.source.repo);
+    const input = await this.prepare(snapshot, selected.companyId, selected.source.repo, originId, projectId, weeklyDue, selected);
+    if ("status" in input) return { result: input, barrier: null };
+    const store = new SourcePublicationStore(this.db);
+    const barrier = await store.reserve(selected, snapshot, input, executionId);
+    let active = true;
+    const dispatchUntil = Math.min(Date.now() + this.deadlineMs, Date.parse(selected.startedAt) + 86400000);
+    const assertActive = () => {
+      if (!active || Date.now() >= dispatchUntil) throw new SourceAttention("source_publication_dispatch_closed");
+    };
+    const dispatch = async <T>(operation: () => Promise<T>): Promise<T> => {
+      assertActive();
+      await store.assertDispatch(selected, barrier);
+      // A guard still awaiting DB validation when CardDelivery times out must not
+      // submit a late request. Already-submitted requests remain pinned as unknown.
+      assertActive();
+      return operation();
+    };
+    const guarded: IssuePort = {
+      list: query => dispatch(() => this.issues.list(query)),
+      create: payload => dispatch(() => this.issues.create(payload)),
+      update: (id, patch, companyId) => dispatch(() => this.issues.update(id, patch, companyId)),
+    };
+    try {
+      const result = await new CardDelivery(this.claims, guarded, this.deadlineMs).ensure(input);
+      return { result, barrier };
+    } finally {
+      active = false;
+    }
+  }
+
+  private async prepare(
+    snapshot: RoutingSnapshot, companyId: string, repo: string, originId: string, projectId: string,
+    weeklyDue: boolean, selected?: CurrentSource,
+  ): Promise<DeliveryInput | PublicationResult> {
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo !== repo.toLowerCase()) throw new Error("Expected a canonical repository");
     const container = snapshot.containers.find(item => item.originId === originId);
     if (!container) return { status: "attention", reason: "Missing original delivery container; never invent a replacement" };
     const members = membersFor(snapshot, container, companyId, repo);
-    // A pre-HTTP assertCurrent cannot make a remote effect atomic with poll changes.
-    if (members.some(member => member.sourceSelection)) return { ...sourceHold };
+    if (!selected && members.some(member => member.sourceSelection)) return { ...sourceHold };
+    if (selected && members.some(member => !member.sourceSelection
+      || canonicalJson(member.sourceSelection) !== canonicalJson(sourceSelection(selected))
+      || member.artifactDigest !== selected.stored.lockfiles.artifactDigest)) {
+      throw new SourceAttention("source_publication_member_mismatch");
+    }
     const claim = await this.claims.read({ companyId, originId });
     if (!container.publishRequested && !weeklyDue && !claim) {
       return { status: "deferred", reason: "Weekly publication not due; evidence and original membership remain durable" };
@@ -81,12 +136,13 @@ export class ContainerPublication {
     for (const member of members) {
       const record = await this.journal.read(companyId, member.currentOriginId, member.decisionId);
       checkEvidence(record, member, companyId, repo);
-      if (record.input_bundle.provenance.sourceSelection) return { ...sourceHold };
-      evidence.push({
-        member,
-        input: record.input_bundle,
-        decision: record.decision_bundle,
-      });
+      if (!selected && record.input_bundle.provenance.sourceSelection) return { ...sourceHold };
+      if (selected && (!record.input_bundle.provenance.sourceSelection
+        || canonicalJson(record.input_bundle.provenance.sourceSelection) !== canonicalJson(sourceSelection(selected))
+        || canonicalJson(record.decision_bundle.provenance) !== canonicalJson(record.input_bundle.provenance))) {
+        throw new SourceAttention("source_publication_evidence_mismatch");
+      }
+      evidence.push({ member, input: record.input_bundle, decision: record.decision_bundle });
     }
     const description = [
       "# Report-only vulnerability evidence",
@@ -105,12 +161,11 @@ export class ContainerPublication {
     ].join("\n\n");
     // Never silently truncate evidence to fit an issue body. Health must surface this error.
     if (Buffer.byteLength(description) > 131072) throw new Error("Publication evidence capacity exceeded; journal retained, no issue effect permitted");
-    const input: DeliveryInput = {
+    return {
       companyId, projectId, originId, originKind: container.originKind,
       title: `[Report-only P${container.priority}] ${repo} — ${container.weekStart ? `week ${container.weekStart.slice(0, 10)}` : "vulnerability finding"}`,
       description, priority: priorities[container.priority], advisoryModified: null,
       publicationRevision: container.revision, reopenUnresolved: members.some(member => member.state === "unresolved"),
     };
-    return this.delivery.ensure(input);
   }
 }

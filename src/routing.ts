@@ -71,7 +71,7 @@ export interface RoutingResult {
   reason: string;
 }
 
-interface Row { revision: number; bundle: RoutingSnapshot }
+interface Row { revision: number; bundle: RoutingSnapshot; effect_token: string | null }
 
 export function utcWeekStart(value: string): string {
   const time = Date.parse(value);
@@ -243,7 +243,7 @@ export class DeliveryRouting {
 
   async snapshot(companyId: string, repo: string): Promise<RoutingSnapshot> {
     const rows = await this.db.query<Row>(
-      `SELECT revision, bundle FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
+      `SELECT revision, bundle, effect_token FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
     );
     return rows[0]?.bundle ?? empty();
   }
@@ -332,10 +332,11 @@ export class DeliveryRouting {
     );
     for (let attempt = 0; attempt < 32; attempt++) {
       const rows = await this.db.query<Row>(
-        `SELECT revision, bundle FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
+        `SELECT revision, bundle, effect_token FROM ${this.table} WHERE company_id = $1 AND repo = $2`, [companyId, repo],
       );
       const row = rows[0];
       if (!row || row.revision >= 2147483646) throw new Error("Routing revision unavailable; operator attention required");
+      if (row.effect_token != null) throw new SourceAttention("source_publication_pending");
       const snapshot = structuredClone(row.bundle);
       const result = await reduce(snapshot);
       const bundle = canonicalJson(snapshot);
@@ -349,7 +350,7 @@ export class DeliveryRouting {
       const fence = selected ? sourceFence(selected, 5) : null;
       const updated = await this.db.execute(
         `UPDATE ${this.table} SET bundle = $4, revision = revision + 1
-         WHERE company_id = $1 AND repo = $2 AND revision = $3${fence ? ` AND ${fence.sql}` : ""}`,
+         WHERE company_id = $1 AND repo = $2 AND revision = $3 AND effect_token IS NULL${fence ? ` AND ${fence.sql}` : ""}`,
         [companyId, repo, row.revision, bundle, ...(fence?.params ?? [])],
       );
       if (updated.rowCount === 1) return result;

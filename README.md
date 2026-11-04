@@ -43,15 +43,19 @@ Implemented:
   Late older success/failure cannot replace a newer poll's selected source or hold.
 - Source-fenced local decision-head/routing writes, with same-statement source row
   locking, DB poll-revision ordering and retained source-selection provenance.
-  Source-selected native publication is held for attention, not silently unfenced.
+  The legacy publication API holds source-selected evidence for attention.
+- Explicit source-pinned publication library integration: exact routing snapshot and
+  rendered payload binding, guarded single-invocation dispatch, deadline revocation,
+  and audit-bound routing cleanup after independently verified settlement.
 - Explicit retained OSV/feed→source-fenced decision/routing orchestration, with exact
   parent references, current and historical freshness checks, and coverage attention.
 - Same-action all-version reduction for identical non-version context, retaining
   every tuple/proof/trace in one deterministic journal revision before routing.
 
 Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, source-fenced native publication
-integration, verified scope/fix/severity enrichment (including incompatible per-version contexts),
+other lockfile formats and complete coverage, live source-pinned publication wiring
+and trusted host-effect settlement verification, verified scope/fix/severity enrichment
+(including incompatible per-version contexts),
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
 configuration, live rescan receipt verification, manifest/jobs and weekly job scheduling,
 managed triage project, health/counters, operator runbook and installation, and two
@@ -281,7 +285,7 @@ promise that GitHub has not changed since polling, or authorization for an effec
 `assertCurrent` detects invalidated returned selections (including a newer poll
 selecting identical bytes), but check-then-write is not a transaction. The local
 journal/routing APIs below add same-statement locking. Native HTTP publication
-still needs a source-fenced effect protocol; merely calling `assertCurrent` before
+uses the separately pinned integration below; merely calling `assertCurrent` before
 an HTTP request does not solve that race. There is no enabled worker.
 The low-level completion boundary trusts its adapter's link between poll and raw
 response; caller-supplied hashes/tokens do not authenticate that link. None of
@@ -331,9 +335,10 @@ OSV result resolves existing findings.
 
 `ContainerPublication.publish` returns attention for source-selected members (or
 source-selected journal evidence), before any native issue lookup/create/update.
-The existing fixture-only publication path is not authorization to bypass that
-hold. Coordinating source changes with indeterminate remote effects, and trusted
-rescan receipt integration, remain required before an enabled worker/pilot. Local
+The legacy fixture-only publication path is not authorization to bypass that
+hold. `publishCurrent` below provides a separate pinned library path, not an
+installed runtime. Trusted host-effect settlement and rescan receipt integration
+remain required before an enabled worker/pilot. Local
 PostgreSQL-engine tests inject races immediately before writes and exercise
 crash/lost-response replay; they do not prove pooled-host transport behavior or
 real pilot acceptance.
@@ -589,7 +594,7 @@ acceptance. No scan, live publication, installation or configuration has run.
 Live receipt validation/ingestion, job integration and real two-run zero-duplicate
 evidence remain required. Library rescan tests are not real pilot acceptance.
 
-## Source-effect barrier primitive (publication remains held)
+## Source-effect barrier primitive (no enabled runtime)
 
 `SourceEffects.reserve(currentSource, intent)` implements the **database half** of
 cross-HTTP fencing. It atomically pins the exact ready source row with a unique
@@ -617,15 +622,56 @@ repeat an issue effect. Malformed or over-1-MiB audit history holds rather than
 silently discarding receipts. The history limit needs operator-facing health and a
 reviewed archival path before sustained operation.
 
-**This does not yet enable native publication.** Intent hashes are identifiers,
-not authentication or proof of current container contents. The primitive does not
-freeze routing, bind the rendered body to all member decisions, authorize dispatch,
-prevent a late sender after settlement, or implement a trusted runtime verifier.
-The next integration must enforce those boundaries, recheck freshness before
-sending, and keep ambiguous requests pinned until independently settled. Fixture
-proof strings test the callback contract only; they are not host-effect receipts.
-`ContainerPublication` still returns attention for every source-selected member
-or journal record, before all native issue lookups/creates/updates.
+**The primitive alone is not a publication permit.** Intent hashes are identifiers,
+not authentication or proof of current container contents. The coordinator below
+adds routing/payload binding and guarded dispatch. It still requires an independent
+trusted runtime verifier; fixture proof strings are not host-effect receipts.
+The legacy `ContainerPublication.publish` still holds source-selected evidence
+before native issue lookups/creates/updates.
+
+### Source-pinned publication integration (library only)
+
+`ContainerPublication.publishCurrent(selection, origin, project, execution, weeklyDue?)`
+clones the current source and validates the original container, every member and
+its retained decision. All members and input/decision provenance must bind to that
+same source selection and lockfile digest. Mixed/old selections are attention,
+not silently republished as current. This conservative hold also applies to
+historical superseded/resolved members; a future historical-evidence policy must
+be explicit before relaxing it. Weekly timing, P0 promotion, full evidence bodies,
+128-KiB capacity and the original claim/revision/content guard are preserved.
+
+Before any issue call, `SourcePublicationStore` pins the source with the execution,
+origin, revision, exact publication content hash and full routing snapshot hash.
+Migration 010 adds a separate routing pin. Its exact-bundle CAS either freezes that
+snapshot or fails without dispatch; a racing mutation cannot change the snapshot
+under the pin. Every routing mutation, including rescan and legacy writes, now
+checks the pin in its CAS. A crash or failed second pin can leave a source-only
+hold. Neither partial acquisition nor a lost read response authorizes dispatch.
+Other decision history/head writes may continue; the pinned routing snapshot and
+its immutable member decisions are the publication's as-of evidence.
+
+Each issue lookup/create/update revalidates the source, source pin, routing pin and
+snapshot hash. Dispatch closes at the earlier of source freshness expiry and the
+invocation deadline, and also closes when the helper returns. Checks run again
+synchronously after asynchronous validation, so a guard suspended past timeout
+cannot later send, even if uncertainty recording delays the return. A submitted
+request can still commit after timeout; its durable pins and issue claim remain.
+There is no automatic retry or API for resuming dispatch on an existing barrier.
+
+Even a created/reused/no-effect result retains both pins. In a later execution,
+`SourcePublicationStore.settle(barrier, verifier)` requires independently verified
+terminal execution **and** settled host effects before releasing the source pin.
+Only that exact retained settlement audit can clear the matching routing token.
+Replay repairs a crash/lost response between the two cleanup writes and cannot
+clear a newer token. A result, age, timeout, worker death or empty lookup is not
+settlement. The verifier must establish no sender can resume and no host request
+can commit late; caller strings and hashes cannot prove either fact.
+
+No installed verifier, worker or callback endpoint is supplied here. Execution
+references must come from the trusted host integration, never raw caller JSON.
+The issue transport must not retry mutations and all runtime publication must use
+this pinned path, not the legacy fixture path. Interleaved PGlite/fake-transport
+regressions are not pooled-host, authenticated cross-HTTP or pilot evidence.
 
 ## Creation safety and reconciliation
 

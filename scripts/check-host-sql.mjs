@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceDecisions, SourceEffects, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
+import { ClaimStore, DATABASE_NAMESPACE, DecisionJournal, DeliveryRouting, SourceDecisions, SourceEffects, SourcePublicationStore, SourceJournal, SourcePollStore, ThreatFeeds, ThreatJournal, parseKev, parseOsvRecord, canonicalJson, sha256 } from "../dist/index.js";
 import { finding } from "../src/test/fixtures.ts";
 import { rescan } from "../src/test/rescans.ts";
 
@@ -37,6 +37,7 @@ const storedThreats = new Map();
 let storedPoll;
 let storedRouting = { version: 1, members: [], containers: [], attention: [] };
 let routingRevision = 0;
+let routingEffectToken = null;
 const db = {
   namespace: DATABASE_NAMESPACE,
   execute: async (sql, params) => {
@@ -67,8 +68,12 @@ const db = {
         input_sha256: params[3], rules_version: params[4], input_bundle: JSON.parse(params[5]), decision_bundle: JSON.parse(params[6]) };
     }
     if (sql.includes("delivery_routing") && sql.startsWith("UPDATE")) {
-      storedRouting = JSON.parse(params[3]);
-      routingRevision++;
+      if (sql.includes("SET effect_token = $3")) routingEffectToken = params[2];
+      else if (sql.includes("SET effect_token = NULL")) routingEffectToken = null;
+      else {
+        storedRouting = JSON.parse(params[3]);
+        routingRevision++;
+      }
     }
     return { rowCount: 1 };
   },
@@ -80,7 +85,7 @@ const db = {
     if (sql.includes("source_polls")) return storedPoll ? [structuredClone(storedPoll)] : [];
     if (sql.includes("threat_snapshots")) return storedThreats.has(params[1]) ? [storedThreats.get(params[1])] : [];
     if (sql.includes("delivery_routing")) {
-      return [{ revision: routingRevision, bundle: storedRouting }];
+      return [{ revision: routingRevision, bundle: storedRouting, effect_token: routingEffectToken }];
     }
     return storedDecision && sql.includes("decision_records") ? [storedDecision] : [];
   },
@@ -147,6 +152,16 @@ const released = await effects.release(barrier, async current => ({
   settledHostEffectsReceipt: "fixture-settled", auditRef: "fixture-only-not-authentication",
 }));
 if (!released || storedPoll.effect_history.length !== 1) throw new Error("Host-validator fixture did not exercise source-effect settlement");
+const publicationStore = new SourcePublicationStore(db, () => new Date("2026-11-04T04:31:00Z"));
+const publicationBarrier = await publicationStore.reserve(selected, await routing.snapshot("fixture-company", configured.repo), {
+  companyId: "fixture-company", originId: "b".repeat(64), projectId: "fixture-project", title: "Fixture report",
+  description: "Fixture body", priority: "low", advisoryModified: null, publicationRevision: 1,
+}, "fixture-execution");
+await publicationStore.assertPinned(publicationBarrier);
+if (!await publicationStore.settle(publicationBarrier, async current => ({
+  previousClaimToken: current.token, terminalExecutionReceipt: "fixture-terminal",
+  settledHostEffectsReceipt: "fixture-settled", auditRef: "fixture-only-not-authentication",
+})) || routingEffectToken !== null) throw new Error("Host-validator fixture did not exercise bound publication settlement");
 const nextPoll = await polls.begin("fixture-company", configured);
 if ((await polls.cached(nextPoll))?.sourceSha !== "a".repeat(40)) throw new Error("Host-validator fixture did not exercise retained cache binding");
 await polls.fail(nextPoll, "fixture_failure");

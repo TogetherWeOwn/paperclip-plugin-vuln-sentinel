@@ -14,6 +14,7 @@ export interface SourceEffectIntent {
   originId: string;
   publicationRevision: number;
   contentSha256: string;
+  routingSha256?: string;
 }
 export interface SourceEffectBarrier extends SourceEffectIntent {
   version: 1;
@@ -27,6 +28,7 @@ export interface SourceEffectBarrier extends SourceEffectIntent {
 function validate(barrier: SourceEffectBarrier): void {
   if (!barrier || barrier.version !== 1 || !TOKEN.test(barrier.token)
     || !HASH.test(barrier.originId) || !HASH.test(barrier.contentSha256)
+    || (barrier.routingSha256 !== undefined && !HASH.test(barrier.routingSha256))
     || !Number.isInteger(barrier.publicationRevision) || barrier.publicationRevision <= 0
     || barrier.publicationRevision > 2147483646 || !barrier.selection
     || !Number.isSafeInteger(barrier.selection.pollRevision) || barrier.selection.pollRevision < 1

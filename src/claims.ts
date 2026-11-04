@@ -104,12 +104,13 @@ export class ClaimStore {
 
 const timestamp = (value: string | null) => value === null ? NaN : Date.parse(value);
 const originKind = (input: DeliveryInput) => input.originKind ?? FINDING_ORIGIN_KIND;
+export const publicationHash = (input: DeliveryInput): string => sha256(canonicalJson({
+  projectId: input.projectId, title: input.title, description: input.description, priority: input.priority,
+  reopenUnresolved: input.reopenUnresolved ?? false,
+}));
 const publication = (input: DeliveryInput) => ({
   published_revision: input.publicationRevision ?? null,
-  published_sha256: input.publicationRevision === undefined ? null : sha256(canonicalJson({
-    projectId: input.projectId, title: input.title, description: input.description, priority: input.priority,
-    reopenUnresolved: input.reopenUnresolved ?? false,
-  })),
+  published_sha256: input.publicationRevision === undefined ? null : publicationHash(input),
 });
 function validate(input: DeliveryInput): void {
   if (!/^[a-f0-9]{64}$/.test(input.originId)) throw new Error("Expected a delivery origin hash");
