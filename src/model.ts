@@ -1,4 +1,4 @@
-export const RULES_VERSION = "1.0.1";
+export const RULES_VERSION = "1.0.2";
 
 export type Priority = 0 | 1 | 2 | 3;
 export type Applicability = "affected" | "not_affected" | "unknown" | "dropped";

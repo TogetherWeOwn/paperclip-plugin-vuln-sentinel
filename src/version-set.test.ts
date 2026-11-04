@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.1+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.2+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -103,12 +103,25 @@ describe("same-action all-version aggregation", () => {
       }
     }
     const result = decide(group(inputs));
-    expect(result).toMatchObject({ rulesVersion: "1.0.1+all-versions.1", applicability: "unknown",
+    expect(result).toMatchObject({ rulesVersion: "1.0.2+all-versions.1", applicability: "unknown",
       matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions).toHaveLength(2);
     for (const decision of result.versionDecisions!) {
       expect(decision).toMatchObject({ applicability: "unknown", matchedRule: 8 });
     }
+  });
+
+  it("keeps blank KEV coverage unknown across all installed tuples instead of proposing VEX", () => {
+    const patch = { functions: closure(), provenance: { ...finding().provenance,
+      kev: { catalogVersion: "\t ", aliases: [] } } };
+    const input = group([tuple("1", "outside", patch), tuple("2", "affected", patch)]);
+    const before = structuredClone(input);
+    const result = decide(input);
+    expect(result).toMatchObject({ applicability: "unknown", matchedRule: 8, delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
+    expect(input).toEqual(before);
+    expect(decide(structuredClone(input))).toEqual(result);
   });
 
   it("keeps dev priority/SLA and compatible fix proposals separate from negative tuples", () => {

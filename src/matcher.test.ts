@@ -266,6 +266,69 @@ describe("negative proof tool-version coverage", () => {
   });
 });
 
+describe("feed-version provenance coverage", () => {
+  it.each(negativeProofs.slice(1).flatMap(proof => ["", " ", "\t\n"].map(version => ({ ...proof, version }))))(
+    "holds $name when the KEV catalog version is blank $version", ({ create, version }) => {
+      const { input } = create();
+      input.provenance.kev!.catalogVersion = version;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(result.reasons).toContain("KEV coverage unavailable");
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["", " ", "\t\n"])("holds compatible-fix proposals without a KEV catalog version %j", version => {
+    const input = finding({ fixedVersion: "1.0.1", compatibleFixVerified: true });
+    input.provenance.kev!.catalogVersion = version;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", proposedRemediation: null });
+  });
+
+  it.each(["date", "modelVersion"] as const)("uses severity fallback when EPSS %s is whitespace only", field => {
+    const input = withEpss(0.5);
+    for (const value of ["", " ", "\t\n"]) {
+      input.provenance.epss![field] = value;
+      const result = decide(input);
+      expect(result).toMatchObject({ priority: 2, slaDays: 30, delivery: "finding" });
+      expect(result.reasons).toContain("EPSS unavailable or invalid; severity fallback");
+      expect(result.provenance.epss![field]).toBe(value);
+    }
+  });
+
+  it.each(["KEV", "MAL"])("does not let blank feed metadata suppress %s P0", kind => {
+    const input = urgent();
+    input.provenance.kev!.catalogVersion = "\t ";
+    input.provenance.epss!.date = " ";
+    input.provenance.epss!.modelVersion = " ";
+    if (kind === "MAL") {
+      input.provenance.kev!.aliases = [];
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["outside", "withdrawn"])("preserves rule-1 %s precedence with unavailable feeds", kind => {
+    const input = urgent();
+    input.provenance.kev!.catalogVersion = " ";
+    if (kind === "outside") input.versionEvidence.status = "outside";
+    else input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
+  it("keeps recorded, nonblank opaque feed versions eligible", () => {
+    const input = withEpss(0.5);
+    input.provenance.epss!.modelVersion = "fixture-model-version";
+    input.provenance.kev!.catalogVersion = "fixture-catalog-version";
+    expect(decide(input)).toMatchObject({ priority: 1, slaDays: 7 });
+    input.functions = closure();
+    expect(decide(input)).toMatchObject({ matchedRule: 5, applicability: "not_affected" });
+  });
+});
+
 describe("finding identities", () => {
   it("uses canonical repo, remediation unit, and the lexical minimum over the complete alias graph", () => {
     const input = finding({ repo: "Example/Service" });

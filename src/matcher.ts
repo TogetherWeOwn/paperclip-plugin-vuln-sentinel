@@ -5,6 +5,7 @@ import { versionInputs } from "./version-set.js";
 import { SourceAttention } from "./source-http.js";
 
 const SLA = [1, 7, 30, 90] as const;
+const nonblank = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const sameSet = (a: string[], b: string[]) =>
   new Set(a).size === new Set(b).size && a.every(item => b.includes(item));
 const validTime = (value: string | null): value is string =>
@@ -18,7 +19,7 @@ function bound(input: FindingInput, evidence: BoundEvidence): boolean {
     && evidence.advisoryId === input.advisoryId && validTime(evidence.advisoryModified)
     && evidence.advisoryModified === advisory?.modified
     && Object.hasOwn(input.provenance.toolVersions, evidence.tool)
-    && typeof toolVersion === "string" && toolVersion.trim().length > 0;
+    && nonblank(toolVersion);
 }
 
 function proposedRemediation(input: FindingInput): Remediation | null {
@@ -76,7 +77,7 @@ function decideVersion(raw: FindingInput): Decision {
   const probability = input.provenance.epss?.probability;
   const epssValid = typeof probability === "number" && Number.isFinite(probability)
     && probability >= 0 && probability <= 1
-    && !!input.provenance.epss?.date && !!input.provenance.epss.modelVersion;
+    && nonblank(input.provenance.epss?.date) && nonblank(input.provenance.epss?.modelVersion);
   if (!epssValid) reasons.push("EPSS unavailable or invalid; severity fallback");
   const urgent = identity.aliases.some(id => id.startsWith("MAL-")
     || input.provenance.kev?.aliases.includes(id));
@@ -121,7 +122,7 @@ function decideVersion(raw: FindingInput): Decision {
   if (!advisory) return residual("Missing source advisory");
   if (advisory.withdrawn !== null && !validTime(advisory.withdrawn)) return residual("Invalid withdrawal metadata");
   if (!validTime(input.provenance.observedAt)) return residual("Invalid observation timestamp");
-  if (!input.provenance.kev?.catalogVersion) return residual("KEV coverage unavailable");
+  if (!nonblank(input.provenance.kev?.catalogVersion)) return residual("KEV coverage unavailable");
   if (input.versionEvidence.status === "unknown" || !bound(input, input.versionEvidence)) {
     return residual("Affected-range coverage unavailable or artifact mismatch");
   }
