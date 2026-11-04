@@ -5,7 +5,7 @@ import { canonicalJson, sha256 } from "./identity.js";
 import { parseLockfileInventory, type InventoryDependency } from "./inventory.js";
 import { npmDeclarationRange, observeNpmManifest, type NpmManifestObservation } from "./npm-manifest.js";
 import type { OsvDependency } from "./osv.js";
-import { validatePnpmMappingKeys } from "./pnpm-yaml.js";
+import { validatePnpmImporterPath, validatePnpmMappingKeys } from "./pnpm-yaml.js";
 import { object, SourceAttention } from "./source-http.js";
 
 export const PNPM_IMPORTER_CONTEXT_VERSION = "1.0.1";
@@ -44,11 +44,7 @@ export function observePnpmImporterContext(
   discovery: RepositoryDiscovery, snapshot: RepositoryLockfiles, lockfilePath: string, importer: string,
   manifestContent: string, candidate?: OsvDependency,
 ): PnpmImporterContextObservation {
-  if (typeof importer !== "string" || !importer.length || importer.length > 1024
-    || /[\\\u0000-\u001f\u007f]/u.test(importer)
-    || (importer !== "." && importer.split("/").some(part => !part || part === "." || part === ".."))) {
-    throw new SourceAttention("invalid_pnpm_importer_path");
-  }
+  validatePnpmImporterPath(importer);
   const tree = validateRepositoryDiscovery(discovery);
   if (tree.repo !== snapshot.repo || tree.sourceSha !== snapshot.sourceSha || tree.defaultBranch !== snapshot.defaultBranch) {
     throw new SourceAttention("pnpm_importer_source_mismatch");

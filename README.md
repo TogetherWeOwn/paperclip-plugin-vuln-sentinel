@@ -761,7 +761,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.9` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.10` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 npm installation locators require an exact `node_modules` path segment, not a
@@ -789,6 +789,16 @@ file's partial positives even when a matching installed target exists. This chec
 shape only: empty, tag, alias, local and other string specifiers are not evaluated
 for installed-version satisfaction or source/owner association here. The separate
 manifest/root-context observers retain their own conservative range limitations.
+
+pnpm inventory and importer context share one supported importer-path check: `.`
+for the lockfile root or a nonempty slash-separated descendant path, at most 1,024
+characters, with no empty, `.` or `..` segments, backslashes or ASCII controls.
+Inventory checks every importer key, including empty or unselected owners. An
+unsupported path discards that file's partial inventory and requires attention;
+valid independent files remain available. Parent-relative/external workspace layouts
+are not supported by this observation boundary, not declared invalid in pnpm itself.
+Passing this check is syntax only, not a discovered manifest, workspace membership
+or installed dependency-owner edge.
 
 pnpm importer dependency entries require both a declared `specifier` (a string of
 at most 256 characters without ASCII controls) and a resolved `version` reference.
@@ -863,7 +873,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.9` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.10` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs

@@ -5,13 +5,13 @@ import { parseDocument } from "yaml";
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import type { OsvDependency } from "./osv.js";
-import { validatePnpmMappingKeys } from "./pnpm-yaml.js";
+import { validatePnpmImporterPath, validatePnpmMappingKeys } from "./pnpm-yaml.js";
 import { object, SourceAttention } from "./source-http.js";
 
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.9", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.10", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -224,7 +224,10 @@ function readPnpm(content: string, add: Add, issues: Set<string>): number {
   for (const tuple of tuples) if (!seen.has(tuple)) issues.add("missing_pnpm_snapshot_entry");
   const importers = entries(root.importers, "missing_pnpm_importers");
   if (!importers.length) throw new SourceAttention("missing_pnpm_importers");
-  for (const [, value] of importers) references(value, true);
+  for (const [path, value] of importers) {
+    validatePnpmImporterPath(path);
+    references(value, true);
+  }
   return packages.length;
 }
 

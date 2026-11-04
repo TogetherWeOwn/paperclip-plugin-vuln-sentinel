@@ -115,6 +115,16 @@ describe("offline pnpm importer declaration context", () => {
       expect(() => observe(f)).toThrow("invalid_pnpm_importer_path");
     });
 
+  it("reports an unsupported unselected importer without borrowing its inventory candidates", () => {
+    const f = fixture();
+    const content = f.source.files[0]!.content.replace("importers:\n", 'importers:\n  "../external": {}\n');
+    const result = observe(fixture(importer, manifest, ".", "pnpm-lock.yaml", content), candidate);
+    expect(result.attention).toContain("inventory:pnpm-lock.yaml:invalid_pnpm_importer_path");
+    expect(result.inventoryCandidates).toEqual([]);
+    expect(result.declarations[0]!.comparison).toBe("same_specifier");
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+  });
+
   it.each(["repo", "sourceSha", "defaultBranch"] as const)("rejects mismatched %s", field => {
     const f = fixture(); f.source[field] = field === "sourceSha" ? "d".repeat(40) : "other";
     expect(() => observe(f)).toThrow("pnpm_importer_source_mismatch");

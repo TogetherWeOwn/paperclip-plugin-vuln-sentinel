@@ -167,6 +167,42 @@ describe("lockfile inventory boundary", () => {
   });
 });
 
+describe("pnpm importer path boundary", () => {
+  const withImporter = (path: string) => pnpm.replace("  .:\n", `  ? ${JSON.stringify(path)}\n  :\n`);
+
+  it.each(["", "..", "../web", "./web", "web/..", "web/./app", "/web", "web/", "web//app",
+    "web\\app", "web\napp", "web\u0000app", "web\u007fapp", "x".repeat(1025)])(
+    "holds unsupported importer path %j even when its dependency references resolve", path => {
+      const result = expectAttention("pnpm-lock.yaml", withImporter(path), "invalid_pnpm_importer_path");
+      expect(result.dependencies).toEqual([]);
+    });
+
+  it.each([".", "packages/web", "apps/.hidden/web", "packages/@scope/web", "x".repeat(1024)])(
+    "retains supported importer path %s without workspace or scope inference", path => {
+      const input = snapshot({ "pnpm-lock.yaml": withImporter(path) });
+      const before = structuredClone(input);
+      const result = parseLockfileInventory(input);
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.dependencies).toHaveLength(2);
+      expect(result.dependencies.every(dep => dep.scope === "unknown" && dep.direct === null)).toBe(true);
+      expect(parseLockfileInventory(input)).toEqual(result);
+      expect(input).toEqual(before);
+    });
+
+  it("checks an empty unselected importer and preserves only independent-file positives", () => {
+    const malformed = pnpm.replace("importers:\n", 'importers:\n  "../external": {}\n');
+    const input = snapshot({ "pnpm-lock.yaml": malformed, "nested/package-lock.json": npm({ "node_modules/lib": npmRow() }) });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files.find(row => row.path === "pnpm-lock.yaml")!.issues).toEqual(["invalid_pnpm_importer_path"]);
+    expect(result.dependencies).toMatchObject([{ package: "lib", locations: [{ path: "nested/package-lock.json" }] }]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+    expect(parseLockfileInventory(input)).toEqual(result);
+    expect(input).toEqual(before);
+  });
+});
+
 describe("pnpm YAML mapping identity", () => {
   it.each(["true", "false", "null", "~", "42", "0x2a", "1.5", ".nan", "[example]", "{example: value}", ""])(
     "holds non-string mapping key %j before JavaScript conversion", key => {
