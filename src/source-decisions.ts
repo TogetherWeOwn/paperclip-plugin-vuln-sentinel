@@ -81,6 +81,8 @@ export class SourceDecisions {
     const attention = ["repository_discovery_not_proven", "full_dependency_closure_not_proven", "runtime_completeness_not_proven"];
     if (!inventory.coverage.configuredPathsParsed) attention.push("inventory_parse_attention");
     if (retained.scan.osv.unavailableIds.length) attention.push("osv_alias_coverage_incomplete");
+    const severityAttention = [...new Set(inputs.flatMap(input => input.provenance.severityAttention ?? []))].sort();
+    attention.push(...severityAttention);
     if (results.some(result => result.status === "attention")) attention.push("routing_attention");
     return {
       status: "attention", lockfileSnapshotId: selected.snapshotId, osvSnapshotId, threatSnapshotId,

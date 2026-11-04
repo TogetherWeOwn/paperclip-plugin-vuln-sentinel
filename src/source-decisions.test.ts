@@ -123,7 +123,7 @@ describe("retained source decision orchestration", () => {
       osvSnapshotId: e.scanId, threatSnapshotId: e.threatId,
       counters: { dependencies: 1, observations: 1, decisions: 1, routingAttention: 0 } });
     expect(result.attention).toEqual(["repository_discovery_not_proven", "full_dependency_closure_not_proven",
-      "runtime_completeness_not_proven", "osv_alias_coverage_incomplete"]);
+      "runtime_completeness_not_proven", "osv_alias_coverage_incomplete", "severity_not_observed"]);
     const member = (await routing.snapshot("company", configured.repo)).members[0]!;
     const stored = (await new DecisionJournal(db).latest("company", member.currentOriginId))!;
     expect(stored.input_bundle.provenance).toMatchObject({ osvSnapshotId: e.scanId, threatSnapshotId: e.threatId,
@@ -133,6 +133,30 @@ describe("retained source decision orchestration", () => {
     expect(stored.decision_bundle.priority).toBe(0);
     expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
     expect(await records("card_claims")).toEqual([]);
+  });
+
+  it("journals vector-derived severity, attention and scorer provenance before replay-safe local routing", async () => {
+    const selected = await ready();
+    const osv = snapshot();
+    osv.records[0] = parseOsvRecord({ ...osv.records[0]!.raw, database_specific: {}, severity: [
+      { type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N" },
+      { type: "CVSS_V4", score: "CVSS:4.0/..." },
+    ] }, "GHSA-fixture");
+    const scan = await sources.recordOsv("company", selected.snapshotId, rehash(osv));
+    const e = { selected, scanId: scan.snapshotId, threatId: await feed() };
+    const result = await observe(e);
+    expect(result.attention).toContain("cvss_v4_not_scored");
+    const member = (await routing.snapshot("company", configured.repo)).members[0]!;
+    const stored = (await new DecisionJournal(db).latest("company", member.currentOriginId))!;
+    expect(stored.input_bundle.severity).toBe("high");
+    expect(stored.input_bundle.cvss4Base).toBeNull();
+    expect(stored.input_bundle.provenance).toMatchObject({ osvSnapshotId: scan.snapshotId,
+      severityAttention: ["cvss_v4_not_scored"], toolVersions: { "vuln-sentinel-osv-severity": "1.0.0" } });
+    expect(stored.decision_bundle.priority).toBe(2);
+    expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
+    await Promise.all([observe(e), observe(e)]);
+    expect(await records("decision_records")).toHaveLength(1);
+    expect(await records("card_claims")).toHaveLength(0);
   });
 
   it("sequential and concurrent replay preserve one decision, member and original container", async () => {

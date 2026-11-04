@@ -31,6 +31,7 @@ export interface Provenance {
   epss: { date: string; modelVersion: string; probability: number | null; snapshotSha256?: string } | null;
   kev: { catalogVersion: string; aliases: string[]; snapshotSha256?: string } | null;
   toolVersions: Record<string, string>;
+  severityAttention?: string[];
 }
 
 export interface BoundEvidence {

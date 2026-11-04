@@ -84,6 +84,40 @@ managed triage project, health/counters, operator runbook and installation, and 
 real consecutive report-only scans. No worker is wired to the explicit publication
 API; no weekly batch or per-finding issue has been emitted on a live host.
 
+## Retained OSV severity enrichment
+
+OSV normalization now combines reported qualitative severity and strict CVSS v3.0/
+v3.1 **Base** scores from retained raw advisories. It takes the highest known severity
+across active aliases, global vectors and exact ecosystem/package affected-row
+vectors; unrelated package rows and withdrawn aliases do not contribute. A lower
+vector cannot override a higher label. Medium labels map to the matcher's `moderate`.
+No CVSS score changes affected-range status, scope, fixes, VEX or rescan eligibility.
+
+`cvssV3Base` implements the [FIRST v3.1 Base equations and integer Roundup](https://www.first.org/cvss/v3.1/specification-document),
+also shared by [v3.0](https://www.first.org/cvss/v3.0/specification-document).
+Every required metric must occur once with a valid value. Valid optional temporal/
+environmental metrics are checked but do not affect the Base score. Unknown metrics,
+duplicates, malformed and oversized vectors are not scored. This is not a CVSS v4
+calculator, and v3 scores are never stored in `cvss4Base`.
+
+Missing, zero, malformed or unsupported scores remain explicit severity attention;
+a zero score is not evidence of non-exposure. Valid labels/vectors alongside those
+gaps remain available without claiming complete severity coverage. Structural and
+capacity failures hold instead of returning partial scoring. The local source report
+surfaces these attention codes, and each decision retains them and the scorer version
+in provenance alongside its immutable raw OSV snapshot. Existing raw-record parsing,
+source snapshot identities, database schema and SQL writers are unchanged; new
+normalization yields a versioned decision input, not a rewrite of historical decisions.
+
+Tests are offline, including all 2,592 Base-metric combinations, known-score vectors,
+active/withdrawn alias reduction, exact-package filtering and retained-source concurrent
+replay. This is source-policy library work only, not a live scan, source switch,
+trusted receipt, installed runtime or publication permit. CVSS v4, verified scope/fix
+context and the remaining installation/pilot gates are still outstanding.
+
+REA angle: reuse the retained raw-source journal and FIRST's published equations;
+no scoring service, new dependency, alternate policy engine or parallel scheduler.
+
 ## Read-only publication diagnostics
 
 `PublicationDiagnostics.read(companyId, repo)` accepts only the namespace query

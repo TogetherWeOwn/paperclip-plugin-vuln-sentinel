@@ -1,6 +1,7 @@
 import { aliasClosure, canonicalJson, sha256 } from "./identity.js";
 import type { Advisory, Ecosystem, FindingInput } from "./model.js";
 import { osvVersionStatus, type OsvAffected } from "./ranges.js";
+import { observeOsvSeverity, OSV_SEVERITY_VERSION } from "./osv-severity.js";
 import { object, SourceAttention, sourceBudget, text, timestamp, type SourceFetch } from "./source-http.js";
 
 const BASE = "https://api.osv.dev/v1";
@@ -299,7 +300,10 @@ export function osvFindingInputs(
       const status = statuses.includes("affected") ? "affected"
         : statuses.length && statuses.every(value => value === "outside") ? "outside" : "unknown";
       const severityOrder: FindingInput["severity"][] = ["critical", "high", "moderate", "low", "unknown"];
-      const severity = severityOrder.find(value => active.some(row => row.severity === value)) ?? record.severity;
+      const severityObservations = active.map(row => "raw" in row
+        ? observeOsvSeverity(row.raw, dep) : { severity: "unknown" as const, attention: ["severity_not_observed"] });
+      const severity = severityOrder.find(value => severityObservations.some(row => row.severity === value)) ?? "unknown";
+      const severityAttention = [...new Set(severityObservations.flatMap(row => row.attention))].sort();
       return {
         repo: context.repo, ecosystem: dep.ecosystem, package: dep.package, version: dep.version,
         fixedVersion: null, compatibleFixVerified: false, direct: false,
@@ -313,7 +317,8 @@ export function osvFindingInputs(
         provenance: {
           observedAt, artifactDigest: context.artifactDigest, artifactKind: "lockfile",
           source: { kind: "osv", queriedAt: snapshot.queriedAt, snapshotSha256 },
-          epss: null, kev: null, toolVersions: { "vuln-sentinel-osv": VERSION },
+          epss: null, kev: null, severityAttention,
+          toolVersions: { "vuln-sentinel-osv": VERSION, "vuln-sentinel-osv-severity": OSV_SEVERITY_VERSION },
         },
       } satisfies FindingInput;
     });

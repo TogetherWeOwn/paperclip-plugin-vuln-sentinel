@@ -28,6 +28,8 @@ export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";
 export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";
 export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
+export { cvssV3Base, observeOsvSeverity, OSV_SEVERITY_VERSION } from "./osv-severity.js";
+export type { OsvSeverityObservation } from "./osv-severity.js";
 export type { OsvDependency, OsvRecord, OsvSnapshot } from "./osv.js";
 export { GitHubRepositoryDiscovery, discoveryCoverage, validateRepositoryDiscovery } from "./github-discovery.js";
 export type { RepositoryDiscovery, RepositoryTreeEntry, DiscoveryCoverage } from "./github-discovery.js";
