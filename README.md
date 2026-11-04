@@ -761,7 +761,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.10` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.11` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 npm installation locators require an exact `node_modules` path segment, not a
@@ -778,7 +778,8 @@ row exists, verified workspace/owner association or directness.
 
 npm and pnpm each allow at most 10,000 dependency references per file across all
 `dependencies`, `devDependencies` and `optionalDependencies` maps. npm counts both
-root and package owners; pnpm shares the same budget between importers and snapshots.
+root and package owners and includes `peerDependencies` in that same budget;
+pnpm shares its budget between importers and snapshots.
 A file over this limit becomes attention and loses its partial positives, while
 valid observations from other files remain available. The limit is not reset for
 each map, owner or declaration section; accepted references still do not establish
@@ -789,6 +790,13 @@ file's partial positives even when a matching installed target exists. This chec
 shape only: empty, tag, alias, local and other string specifiers are not evaluated
 for installed-version satisfaction or source/owner association here. The separate
 manifest/root-context observers retain their own conservative range limitations.
+The same map/name/specifier shape checks cover npm `peerDependencies` in every
+root, installed or local package row, even if the target is installed. Peer
+constraints do not require a matching installation here: absent peers (including
+optional peers) are not reported as missing ordinary dependency entries, and
+`peerDependenciesMeta` optionality or installed-version satisfaction is not evaluated.
+A parsed peer declaration neither proves installed ownership nor supplies scope,
+closure, source trust or compatible-fix evidence.
 
 pnpm inventory and importer context share one supported importer-path check: `.`
 for the lockfile root or a nonempty slash-separated descendant path, at most 1,024
@@ -873,7 +881,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.10` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.11` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs

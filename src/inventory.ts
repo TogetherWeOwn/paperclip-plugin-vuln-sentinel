@@ -11,7 +11,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.10", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.11", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -126,7 +126,7 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
   // Detect an explicitly referenced but missing installed entry, not just table syntax.
   let referenceCount = 0;
   for (const [locator, row] of packages) {
-    for (const kind of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    for (const kind of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
       if (row[kind] === undefined) continue;
       const refs = entries(row[kind], "invalid_npm_dependency_map");
       referenceCount += refs.length;
@@ -136,6 +136,8 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
         if (typeof reference !== "string" || reference.length > 256 || /[\u0000-\u001f\u007f]/u.test(reference)) {
           throw new SourceAttention("invalid_npm_dependency_reference");
         }
+        // Peer constraints are declarations, not guaranteed installed targets (including optional peers).
+        if (kind === "peerDependencies") continue;
         let parent = locator;
         let found = false;
         for (;;) {

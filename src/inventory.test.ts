@@ -397,7 +397,7 @@ describe("npm lockfile entries", () => {
   });
 
   describe.each([2, 3])("version %i dependency declarations", lockfileVersion => {
-    it.each(["dependencies", "devDependencies", "optionalDependencies"])("holds malformed %s values even when the installed target exists", kind => {
+    it.each(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"])("holds malformed %s values even when the installed target exists", kind => {
       for (const value of [null, true, 1, [], {}, "x".repeat(257), "^1.0.0\n", "\u0000", "\u007f"]) {
         for (const locator of ["", "node_modules/parent", "packages/local"]) {
           const input = snapshot({ "package-lock.json": npm({
@@ -415,7 +415,7 @@ describe("npm lockfile entries", () => {
       }
     });
 
-    it.each(["dependencies", "devDependencies", "optionalDependencies"])("retains valid %s strings without declaring range compatibility or ownership", kind => {
+    it.each(["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"])("retains valid %s strings without declaring range compatibility or ownership", kind => {
       for (const value of ["", "*", "^1.0.0", "latest", "npm:lib@^1.0.0", "workspace:*", "file:../lib", "git+https://example.com/lib.git", "x".repeat(256)]) {
         const result = parseNpm({ "": { [kind]: { lib: value } }, "node_modules/lib": npmRow() }, lockfileVersion);
         expect(result.coverage.configuredPathsParsed).toBe(true);
@@ -424,6 +424,62 @@ describe("npm lockfile entries", () => {
         expect(result.coverage.runtimeCompleteness).toBe("not_proven");
       }
     });
+  });
+
+  describe.each([2, 3])("version %i peer declaration validation", lockfileVersion => {
+    it.each([null, true, [], "lib"].map(peerDependencies => ({ peerDependencies })))("holds a malformed peer map $peerDependencies", ({ peerDependencies }) => {
+      const result = parseNpm({ "": { peerDependencies }, "node_modules/lib": npmRow() }, lockfileVersion);
+      expect(result.files[0]!.issues).toEqual(["invalid_npm_dependency_map"]);
+      expect(result.coverage.configuredPathsParsed).toBe(false);
+      expect(result.dependencies).toEqual([]);
+    });
+
+    it.each(["../lib", "@scope/lib/extra", "bad name"])("holds invalid peer name %s", name => {
+      const result = parseNpm({ "": { peerDependencies: { [name]: "*" } }, "node_modules/lib": npmRow() }, lockfileVersion);
+      expect(result.files[0]!.issues).toEqual(["invalid_npm_name"]);
+      expect(result.dependencies).toEqual([]);
+    });
+
+    it("does not require a peer installation, apply optional metadata or evaluate satisfaction", () => {
+      const result = parseNpm({
+        "": { peerDependencies: { absent: "^1.0.0" }, peerDependenciesMeta: { absent: { optional: true } } },
+        "node_modules/lib": { ...npmRow(), peerDependencies: { "@scope/absent": "^2.0.0", lib: "^9.0.0" } },
+      }, lockfileVersion);
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.files[0]!.issues).toEqual([]);
+      expect(result.dependencies).toEqual([{ ecosystem: "npm", package: "lib", version: "1.2.3", scope: "unknown", direct: null,
+        locations: [{ path: "package-lock.json", locator: "node_modules/lib" }] }]);
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+    });
+  });
+
+  it("discards malformed peer-file positives but preserves independent file inventory", () => {
+    const result = parseLockfileInventory(snapshot({
+      "npm-shrinkwrap.json": npm({ "node_modules/lib": { ...npmRow(), peerDependencies: { lib: null } } }),
+      "other/package-lock.json": npm({ "node_modules/other": npmRow("other") }),
+    }));
+    expect(result.files.find(file => file.path === "npm-shrinkwrap.json")!.issues).toEqual(["invalid_npm_dependency_reference"]);
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+  });
+
+  it.each([10_000, 10_001])("shares the npm reference budget with peer maps: %i", count => {
+    const refs = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`peer${index}`, "*"]));
+    const result = parseNpm({ "": { peerDependencies: refs }, "node_modules/lib": {
+      ...npmRow(), peerDependencies: { ...refs, ...(count > 10_000 ? { extra: "*" } : {}) },
+    } });
+    expect(result.coverage.configuredPathsParsed).toBe(count === 10_000);
+    expect(result.files[0]!.issues).toEqual(count === 10_000 ? [] : ["inventory_entry_capacity"]);
+    expect(result.dependencies).toHaveLength(count === 10_000 ? 1 : 0);
+  });
+
+  it("counts ordinary and peer declarations against one npm budget", () => {
+    const refs = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`peer${index}`, "*"]));
+    const result = parseNpm({ "": { dependencies: { lib: "*" }, peerDependencies: refs },
+      "node_modules/lib": { ...npmRow(), peerDependencies: refs } });
+    expect(result.files[0]!.issues).toEqual(["inventory_entry_capacity"]);
+    expect(result.dependencies).toEqual([]);
   });
 
   it("discards malformed npm reference positives but preserves another file's inventory", () => {
