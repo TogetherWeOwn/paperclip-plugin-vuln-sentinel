@@ -339,6 +339,90 @@ describe("Cargo locked inventory is not native inventory", () => {
     expectAttention("Cargo.lock", content, code);
   });
 
+  it.each([3, 4])("checks supported reference forms in Cargo v%i without inferring scope or closure", v => {
+    const content = `version = ${v}\n${cargoPackage("owner")}dependencies = ["lib", "other 2.0.0", "third 3.0.0 (registry+https://github.com/rust-lang/crates.io-index)"]\n${cargoPackage()}${cargoPackage("other", "2.0.0")}${cargoPackage("third", "3.0.0")}`;
+    const result = parseFile("Cargo.lock", content);
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies).toHaveLength(4);
+    expect(result.dependencies.every(dep => dep.scope === "unknown" && dep.direct === null)).toBe(true);
+    expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+    expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+  });
+
+  it.each(["absent", "lib 9.0.0", "lib 1.2.3 (registry+https://other.invalid/index)"])("holds missing Cargo reference %s while retaining known positives", reference => {
+    const result = expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = [${JSON.stringify(reference)}]\n${cargoPackage()}`, "missing_cargo_dependency_entry");
+    expect(result.dependencies.map(dep => dep.package).sort()).toEqual(["lib", "owner"]);
+  });
+
+  it.each(["lib", "lib 1.2.3"])("holds ambiguous Cargo reference %s without choosing one source or version", reference => {
+    const extra = reference === "lib" ? cargoPackage("lib", "2.0.0") : cargoPackage("lib", "1.2.3", "registry+https://other.invalid/index");
+    const result = expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = [${JSON.stringify(reference)}]\n${cargoPackage()}${extra}`, "ambiguous_cargo_dependency_reference");
+    expect(result.dependencies.find(dep => dep.package === "lib")).toBeDefined();
+  });
+
+  it("resolves exact build-version references without collapsing equal-precedence versions", () => {
+    const result = parseFile("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = ["lib 1.2.3+one", "lib 1.2.3+two"]\n${cargoPackage("lib", "1.2.3+one")}${cargoPackage("lib", "1.2.3+two")}`);
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies.filter(dep => dep.package === "lib").map(dep => dep.version)).toEqual(["1.2.3+one", "1.2.3+two"]);
+  });
+
+  it.each(["lib ^1.2.3", "lib v1.2.3", "lib 1.2.3 trailing", "lib 1.2.3 ()", " lib", "lib ", "lib\\nother", "lib 1.2.3 (x(y))"])("holds unsupported Cargo reference %s", reference => {
+    expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = [${JSON.stringify(reference)}]\n${cargoPackage()}`, "unsupported_cargo_dependency_reference");
+  });
+
+  it.each(["42", "{}", '"lib"', "[42]"])("holds malformed Cargo dependency list %s", dependencies => {
+    expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = ${dependencies}\n${cargoPackage()}`, "invalid_cargo_dependencies");
+  });
+
+  it("holds duplicate references without dropping known package identities", () => {
+    const result = expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = ["lib", "lib"]\n${cargoPackage()}`, "duplicate_cargo_dependency_reference");
+    expect(result.dependencies).toHaveLength(2);
+  });
+
+  it("checks dependencies of local owners even though their registry identity remains unverified", () => {
+    const result = expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner", "1.0.0", null)}dependencies = ["absent"]\n${cargoPackage()}`, "missing_cargo_dependency_entry");
+    expect(result.files[0]!.issues).toContain("local_or_workspace_package");
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["lib"]);
+  });
+
+  it("bounds aggregate Cargo references instead of returning truncated parsed coverage", () => {
+    const refs = JSON.stringify(Array.from({ length: 5001 }, () => "lib"));
+    expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = ${refs}\n${cargoPackage("other")}dependencies = ${refs}\n${cargoPackage()}`, "inventory_entry_capacity");
+  });
+
+  it("source-qualified references disambiguate retained rows, not their registry authenticity", () => {
+    const content = `version = 4\n${cargoPackage("owner")}dependencies = ["lib 1.2.3 (registry+https://github.com/rust-lang/crates.io-index)"]\n${cargoPackage()}${cargoPackage("lib", "1.2.3", "registry+https://other.invalid/index")}`;
+    const result = parseFile("Cargo.lock", content);
+    expect(result.files[0]!.issues).toEqual(["unverified_cargo_registry_source"]);
+    expect(result.dependencies).toHaveLength(2);
+  });
+
+  it("does not satisfy a missing Cargo reference from a separate lockfile", () => {
+    const input = snapshot({ "Cargo.lock": `version = 4\n${cargoPackage("owner")}dependencies = ["lib"]\n`, "nested/Cargo.lock": `version = 4\n${cargoPackage()}` });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files.find(row => row.path === "Cargo.lock")!.issues).toContain("missing_cargo_dependency_entry");
+    expect(result.files.find(row => row.path === "nested/Cargo.lock")!.status).toBe("parsed");
+    expect(result.dependencies).toHaveLength(2);
+    expect(input).toEqual(before);
+    expect(parseLockfileInventory(input)).toEqual(result);
+  });
+
+  it.each(["lib 1.2.3+different", "lib 1.2.3"])("does not collapse build identity for absent reference %s", reference => {
+    expectAttention("Cargo.lock", `version = 4\n${cargoPackage("owner")}dependencies = [${JSON.stringify(reference)}]\n${cargoPackage("lib", "1.2.3+one")}`, "missing_cargo_dependency_entry");
+  });
+
+  it.each(['source = 42', 'source = ""', 'source = "registry+bad source"'])("holds malformed Cargo source shape %s", source => {
+    const content = cargoPackage().replace('source = "registry+https://github.com/rust-lang/crates.io-index"', source);
+    expectAttention("Cargo.lock", `version = 4\n${content}`, "invalid_cargo_source");
+  });
+
+  it("holds oversized reference text without truncation or a missing-entry claim", () => {
+    const content = `version = 4\n${cargoPackage()}dependencies = [${JSON.stringify("a".repeat(1537))}]\n`;
+    const result = expectAttention("Cargo.lock", content, "unsupported_cargo_dependency_reference");
+    expect(result.files[0]!.issues).not.toContain("missing_cargo_dependency_entry");
+  });
+
   it("does not accept duplicate TOML keys", () => {
     expectAttention("Cargo.lock", `version = 4\nversion = 4\n${cargoPackage()}`, "malformed_lockfile");
   });

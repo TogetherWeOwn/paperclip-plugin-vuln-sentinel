@@ -720,8 +720,19 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.2` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.3` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
+
+Cargo dependency lists are checked against that same lockfile's complete package
+row table, including local and non-registry rows. Supported references are an exact
+name, name plus canonical version, or name plus canonical version and parenthesized
+source. Missing targets, ambiguous abbreviated references, duplicate references and
+unsupported syntax require attention while retaining valid registry positives.
+Malformed dependency-list/source shapes discard that file's partial parse. Reference
+checks use bounded indexed lookups (10,000 references total per file), never a
+cross-lockfile match or a semver-precedence substitution for an exact build identity.
+A reference match establishes only internal retained-row accounting, not source
+trust, an installed owner edge, dev/runtime scope, dependency closure or a fix.
 
 Local/workspace links, Git/custom sources, missing entries, unsupported formats and
 versions, malformed/duplicate keys, ambiguous versions and unverified registry
@@ -762,7 +773,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.2` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.3` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs

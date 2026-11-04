@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.2", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.3", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -203,6 +203,9 @@ function readCargo(content: string, add: Add, issues: Set<string>): number {
   if (root.version !== 3 && root.version !== 4) throw new SourceAttention("unsupported_cargo_lockfile_version");
   if (!Array.isArray(root.package) || root.package.length > MAX_ENTRIES) throw new SourceAttention("invalid_cargo_packages");
   const seen = new Set<string>();
+  const targets = new Map<string, number>();
+  const references: string[][] = [];
+  let referenceCount = 0;
   for (const [index, value] of root.package.entries()) {
     const row = object(value, "invalid_cargo_package");
     if (typeof row.name !== "string" || row.name.length > 64 || !CRATE_NAME.test(row.name)) throw new SourceAttention("invalid_crate_name");
@@ -210,6 +213,19 @@ function readCargo(content: string, add: Add, issues: Set<string>): number {
     const key = canonicalJson([row.name, v, row.source ?? null]);
     if (seen.has(key)) throw new SourceAttention("duplicate_cargo_tuple");
     seen.add(key);
+    if (row.source !== undefined && (typeof row.source !== "string" || !row.source.length || row.source.length > 1024
+      || /[\u0000- \u007f()]/u.test(row.source))) throw new SourceAttention("invalid_cargo_source");
+    for (const reference of [row.name, `${row.name} ${v}`, ...(row.source === undefined ? [] : [`${row.name} ${v} (${row.source})`])]) {
+      targets.set(reference, (targets.get(reference) ?? 0) + 1);
+    }
+    if (row.dependencies !== undefined) {
+      if (!Array.isArray(row.dependencies) || row.dependencies.some(ref => typeof ref !== "string")) {
+        throw new SourceAttention("invalid_cargo_dependencies");
+      }
+      referenceCount += row.dependencies.length;
+      if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
+      references.push(row.dependencies as string[]);
+    }
     if (row.source !== "registry+https://github.com/rust-lang/crates.io-index") {
       issues.add(row.source === undefined ? "local_or_workspace_package" : "unverified_cargo_registry_source");
       continue;
@@ -219,6 +235,25 @@ function readCargo(content: string, add: Add, issues: Set<string>): number {
       continue;
     }
     add({ ecosystem: "crates.io", package: row.name, version: v }, `package[${index}]`);
+  }
+  // References describe only retained lockfile accounting, not installed owner/scope or full closure.
+  for (const refs of references) {
+    const unique = new Set<string>();
+    for (const ref of refs) {
+      if (unique.has(ref)) issues.add("duplicate_cargo_dependency_reference");
+      unique.add(ref);
+      const match = ref.length <= 1536 ? /^([A-Za-z0-9_-]{1,64})(?: ([^\s()]+)(?: \(([^\u0000- \u007f()]+)\))?)?$/u.exec(ref) : null;
+      try {
+        if (!match) throw new SourceAttention("unsupported_cargo_dependency_reference");
+        if (match[2] !== undefined) version(match[2]);
+      } catch {
+        issues.add("unsupported_cargo_dependency_reference");
+        continue;
+      }
+      const count = targets.get(ref) ?? 0;
+      if (!count) issues.add("missing_cargo_dependency_entry");
+      else if (count > 1) issues.add("ambiguous_cargo_dependency_reference");
+    }
   }
   return root.package.length;
 }
