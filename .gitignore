@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+.claude/
+.paperclip/
+.paperclip-repositories/
