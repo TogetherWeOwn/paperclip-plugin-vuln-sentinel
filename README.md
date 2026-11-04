@@ -1145,7 +1145,7 @@ Remediation is proposed only when actionable tuples agree, and VEX only when all
 non-dropped tuples agree on the negative proposal. All-dropped sets have no VEX or
 delivery; a negative observation still never resolves a member.
 
-Rules `1.0.4` require an own, nonblank string in `provenance.toolVersions` for
+Rules `1.0.5` require an own, nonblank string in `provenance.toolVersions` for
 bound range, platform, Go and full-closure function evidence. Inherited object
 properties and whitespace-only versions are missing provenance, not proof that
 can drop a finding or propose negative VEX. Explicit own prototype-shaped keys
@@ -1170,8 +1170,17 @@ failed status and present/unknown reflect/unsafe evidence require residual revie
 not negative VEX or a compatible-fix proposal. Complete symbol hits still skip
 function-absence checks; rule-1 and MAL/KEV P0 precedence remain unchanged.
 
+Bound completeness must be explicit `complete: true`, not a truthy string, number,
+array or object. Function scans likewise require explicit `true` for advisory
+confirmation, full dependency closure and all-source availability. Missing or
+nonboolean flags hold negative VEX and downstream fix proposals; they cannot
+establish range exclusion or suppress MAL/KEV P0. Fix proposals independently
+require `compatibleFixVerified: true`; a truthy nonboolean verification flag is
+not compatibility evidence. Valid rule-1 evidence still precedes later incomplete
+evidence.
+
 The journal stores one complete set/decision revision, with a versioned
-`1.0.4+all-versions.1` reducer, input hash and each tuple's decision hash,
+`1.0.5+all-versions.1` reducer, input hash and each tuple's decision hash,
 applicability and rule trace. Tuple enumeration order does not change the action
 or hash. No tuple-level decision head competes with the aggregate via timestamp
 or lexical hash ordering. Current poll/lockfile/OSV/feed references apply to every

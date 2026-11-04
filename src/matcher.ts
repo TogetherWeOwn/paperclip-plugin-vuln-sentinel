@@ -14,7 +14,7 @@ const validTime = (value: string | null): value is string =>
 function bound(input: FindingInput, evidence: BoundEvidence): boolean {
   const advisory = input.aliases.find(item => item.id === input.advisoryId);
   const toolVersion = input.provenance.toolVersions[evidence.tool];
-  return evidence.complete && nonblank(input.provenance.artifactDigest)
+  return evidence.complete === true && nonblank(input.provenance.artifactDigest)
     && evidence.artifactDigest === input.provenance.artifactDigest
     && evidence.advisoryId === input.advisoryId && validTime(evidence.advisoryModified)
     && evidence.advisoryModified === advisory?.modified
@@ -23,7 +23,7 @@ function bound(input: FindingInput, evidence: BoundEvidence): boolean {
 }
 
 function proposedRemediation(input: FindingInput): Remediation | null {
-  if (!input.compatibleFixVerified || !input.fixedVersion) return null;
+  if (input.compatibleFixVerified !== true || !input.fixedVersion) return null;
   const { package: pkg, fixedVersion } = input;
   // Advisory-controlled strings may be displayed as commands, never evaluated.
   if (!/^[a-zA-Z0-9@/_.-]+$/.test(pkg) || pkg.startsWith("-")
@@ -154,8 +154,8 @@ function decideVersion(raw: FindingInput): Decision {
   }
   if (!skipFunctions && input.functions) {
     const scan = input.functions;
-    if (!bound(input, scan) || !scan.confirmedInAdvisory || !scan.fullDependencyClosure
-      || !scan.allSourcesAvailable || !Number.isSafeInteger(scan.ownHits) || scan.ownHits < 0
+    if (!bound(input, scan) || scan.confirmedInAdvisory !== true || scan.fullDependencyClosure !== true
+      || scan.allSourcesAvailable !== true || !Number.isSafeInteger(scan.ownHits) || scan.ownHits < 0
       || !Number.isSafeInteger(scan.dependencyHits) || scan.dependencyHits < 0) {
       return residual("Affected-function scan lacks confirmed full-closure evidence");
     }

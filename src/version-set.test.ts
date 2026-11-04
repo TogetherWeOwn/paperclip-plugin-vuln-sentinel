@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.4+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.5+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -120,7 +120,7 @@ describe("same-action all-version aggregation", () => {
       }
     }
     const result = decide(group(inputs));
-    expect(result).toMatchObject({ rulesVersion: "1.0.4+all-versions.1", applicability: "unknown",
+    expect(result).toMatchObject({ rulesVersion: "1.0.5+all-versions.1", applicability: "unknown",
       matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions).toHaveLength(2);
     for (const decision of result.versionDecisions!) {
@@ -150,6 +150,47 @@ describe("same-action all-version aggregation", () => {
     expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
       proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
+    expect(input).toEqual(before);
+    expect(decide(structuredClone(input))).toEqual(result);
+  });
+
+  it("does not drop an all-version action when one range completeness flag is nonboolean", () => {
+    const inputs = [tuple("1", "outside"), tuple("2", "outside")];
+    Object.assign(inputs[1]!.versionEvidence, { complete: "false" });
+    const input = group(inputs);
+    const before = structuredClone(input);
+    const result = decide(input);
+    expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
+    expect(input).toEqual(before);
+    expect(decide(structuredClone(input))).toEqual(result);
+  });
+
+  it.each(["confirmedInAdvisory", "fullDependencyClosure", "allSourcesAvailable"] as const)(
+    "holds all-version function VEX when %s is truthy but nonboolean", field => {
+      const patch = { functions: closure() };
+      Object.assign(patch.functions, { [field]: "false" });
+      const input = group([tuple("1", "outside", patch), tuple("2", "affected", patch)]);
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it("holds all-version fix proposals when compatibility verification is nonboolean", () => {
+    const patch = { fixedVersion: "4.0.0", compatibleFixVerified: true };
+    Object.assign(patch, { compatibleFixVerified: "false" });
+    const input = group([tuple("1", "outside", patch), tuple("2", "affected", patch)]);
+    const before = structuredClone(input);
+    const result = decide(input);
+    expect(result).toMatchObject({ matchedRule: 8, applicability: "affected", delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "affected"]);
     expect(input).toEqual(before);
     expect(decide(structuredClone(input))).toEqual(result);
   });

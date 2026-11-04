@@ -257,6 +257,92 @@ const negativeProofs = [
   } },
 ];
 
+describe("explicit evidence completeness", () => {
+  const unsupportedFlags = [undefined, null, false, 0, "false", "true", 1, [], {}];
+
+  it.each(negativeProofs)("requires complete: true for $name", ({ create }) => {
+    for (const complete of unsupportedFlags) {
+      const { input, evidence } = create();
+      Object.assign(evidence, { complete });
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    }
+  });
+
+  it("requires explicit affected-range completeness before later negative or fix proposals", () => {
+    const input = finding({ functions: closure(), fixedVersion: "1.0.1", compatibleFixVerified: true });
+    Object.assign(input.versionEvidence, { complete: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["confirmedInAdvisory", "fullDependencyClosure", "allSourcesAvailable"] as const)(
+    "requires explicit %s: true before function absence or remediation", field => {
+      for (const value of unsupportedFlags) {
+        for (const ownHits of [0, 1]) {
+          const input = finding({ functions: { ...closure(), ownHits },
+            fixedVersion: "1.0.1", compatibleFixVerified: true });
+          Object.assign(input.functions!, { [field]: value });
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+            proposedVex: null, proposedRemediation: null });
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      }
+    },
+  );
+
+  it.each(["npm", "crates.io", "Go", "PyPI"] as const)(
+    "requires explicit compatibleFixVerified: true before %s fix proposals", ecosystem => {
+      for (const compatibleFixVerified of unsupportedFlags) {
+        const input = finding({ ecosystem, direct: false, fixedVersion: "1.0.1",
+          go: ecosystem === "Go" ? goScan() : null });
+        Object.assign(input, { compatibleFixVerified });
+        const before = structuredClone(input);
+        const result = decide(input);
+        expect(result).toMatchObject({ matchedRule: 8, delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      }
+    },
+  );
+
+  it.each(["KEV", "MAL"])("truthy nonboolean range completeness cannot suppress %s P0", kind => {
+    const input = urgent();
+    input.versionEvidence.status = "outside";
+    Object.assign(input.versionEvidence, { complete: "false" });
+    if (kind === "MAL") {
+      input.provenance.kev = null;
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it("preserves advisory withdrawal precedence over malformed completeness", () => {
+    const input = urgent();
+    input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    Object.assign(input.versionEvidence, { complete: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
+  it("keeps complete range exclusion ahead of incomplete later function evidence", () => {
+    const input = finding({ functions: closure() });
+    input.versionEvidence.status = "outside";
+    Object.assign(input.functions!, { fullDependencyClosure: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+});
+
 describe("negative proof tool-version coverage", () => {
   it.each(negativeProofs)("keeps complete, versioned $name evidence eligible", ({ create, rule }) => {
     expect(decide(create().input)).toMatchObject({ matchedRule: rule, delivery: "none" });
