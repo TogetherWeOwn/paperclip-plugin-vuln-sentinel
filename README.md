@@ -156,6 +156,48 @@ REA angle: reuse existing exact-tree/blob checks, duplicate-aware JSON validatio
 the pinned SemVer library, without running package-manager resolution or adding a
 second matcher, source transport, authority mirror or runtime entrypoint.
 
+## Offline npm root declaration context
+
+`observeNpmRootContext(discovery, snapshot, lockfilePath, manifestContent)` binds
+all supplied lockfile bytes to the retained commit/tree, reparses the inventory and
+validates the exact colocated `package.json`. For one explicit npm v2/v3 lockfile
+or shrinkwrap, it compares that manifest's declarations with the reported
+`packages[""]` root record. Every section is retained separately: literal equal
+specifiers, different specifiers, manifest-only and lockfile-only rows. Semantic
+range equivalence and optional/peer/override precedence are not guessed. Duplicate
+JSON keys, malformed declarations, mismatched tree/blob/size or source bindings,
+lossy UTF-8 and unsupported selected formats fail closed.
+
+The result includes every same-name npm inventory tuple and location **in the
+selected lockfile**, not just one installed version. `rootLocatorReported` only
+records whether `node_modules/<reported-package-name>` occurs among those locations.
+These are name-only candidates, never resolved dependency or ownership edges.
+Aliases, local/workspace references and hoisted/transitive paths are not resolved;
+an absent candidate or declaration proves no package absence, safety or scope.
+Inventory attention is retained, and known colocated alternate lockfiles add a
+selection hold rather than silently choosing a package manager. Nested workspace
+owners, transitive constraints and root metadata remain unevaluated.
+
+Results remain `attention`, `scope: "unknown"`, `direct: null` and
+`compatibleFixVerified: false`, including when every declaration agrees. Raw
+manifest/lockfile, discovery, inventory and observer-version identities support
+deterministic offline replay, not source authenticity/freshness, a current-source
+permit, complete owner constraints, compatible all-version fix or release
+availability. Nothing feeds rule 6, changes normalized fix fields, resolves members
+or authorizes publication. The function has no HTTP, database, issue or runtime
+port. No schema, writer or authority mapping is changed.
+
+Existing input bounds apply; the observer also fails rather than truncating above
+10,000 combined declaration rows or 1 MiB expanded output. Offline tests cover
+multiple versions/locations, alias and workspace holds, section conflicts, partial
+inventory, exact byte/source binding, malformed/duplicate records, capacity and
+replay/input immutability. They are not enabled scans or pilot acceptance;
+publication remains NOT ADMISSIBLE/off.
+
+REA angle: reuse the existing exact-tree manifest observer and inventory parser,
+retaining the lockfile's explicit root declarations rather than executing npm,
+adding another resolver, or promoting colocated paths into trusted owner evidence.
+
 ## Offline reported OSV fixing boundaries
 
 `observeOsvFixes(snapshot, dependency)` validates the complete retained raw/derived
