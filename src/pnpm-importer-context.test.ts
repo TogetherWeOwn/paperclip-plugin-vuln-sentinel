@@ -125,6 +125,22 @@ describe("offline pnpm importer declaration context", () => {
     expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
   });
 
+  it.each(["packages", "snapshots"])("reports an unsupported %s context without borrowing partial inventory candidates", owner => {
+    const key = "example@1.2.3(peer@2.0.0))";
+    const raw = JSON.stringify({ lockfileVersion: "9.0", importers: { ".": importer },
+      packages: { [owner === "packages" ? key : "example@1.2.3"]: { resolution: { integrity: "sha512-YWJj" } } },
+      snapshots: { [key]: {} } });
+    const f = fixture(importer, manifest, ".", "pnpm-lock.yaml", raw);
+    const before = structuredClone(f);
+    const result = observe(f, candidate);
+    expect(result.attention).toContain("inventory:pnpm-lock.yaml:unsupported_pnpm_package_key");
+    expect(result.inventoryCandidates).toEqual([]);
+    expect(result.declarations[0]!.comparison).toBe("same_specifier");
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+    expect(observe(f, candidate)).toEqual(result);
+    expect(f).toEqual(before);
+  });
+
   it.each(["repo", "sourceSha", "defaultBranch"] as const)("rejects mismatched %s", field => {
     const f = fixture(); f.source[field] = field === "sourceSha" ? "d".repeat(40) : "other";
     expect(() => observe(f)).toThrow("pnpm_importer_source_mismatch");

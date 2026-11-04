@@ -761,7 +761,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.12` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.13` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 npm installation locators require an exact `node_modules` path segment, not a
@@ -808,6 +808,15 @@ valid independent files remain available. Parent-relative/external workspace lay
 are not supported by this observation boundary, not declared invalid in pnpm itself.
 Passing this check is syntax only, not a discovered manifest, workspace membership
 or installed dependency-owner edge.
+
+pnpm package and snapshot locators reject ASCII controls and limit the version plus
+opaque context suffix to 1,024 characters, consistent with resolved-reference bounds.
+Context suffixes must be balanced parenthesized groups with no text between groups;
+scoped, nested and hash-like contexts remain opaque and preserve their exact locator
+identity. Validation precedes resolution filtering and covers unreferenced rows too.
+Unsupported keys discard that file's partial positives but preserve valid independent
+files. This checks supported syntax only, not whether peers exist, satisfy constraints,
+identify installed owners or establish workspace, scope, closure or compatible fixes.
 
 pnpm package-level `peerDependencies` maps require supported npm names and string
 specifiers of at most 256 characters without ASCII controls, before source-resolution
@@ -890,7 +899,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.12` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.13` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs

@@ -11,7 +11,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.12", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.13", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -154,8 +154,20 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
 }
 
 function pnpmKey(key: string): OsvDependency {
-  const match = /^((?:@[^/]+\/)?[^@/]+)@([^()]+)(?:\([^\r\n]*\))?$/u.exec(key);
-  if (!match) throw new SourceAttention("unsupported_pnpm_package_key");
+  if (key.length > 214 + 1 + 1024 || /[\u0000-\u001f\u007f]/u.test(key)) {
+    throw new SourceAttention("unsupported_pnpm_package_key");
+  }
+  const match = /^((?:@[^/]+\/)?[^@/]+)@([^()]+)(\([^\r\n]*\))?$/u.exec(key);
+  if (!match || match[2]!.length + (match[3]?.length ?? 0) > 1024) throw new SourceAttention("unsupported_pnpm_package_key");
+  // Contexts remain opaque, but must be balanced groups with no intervening text.
+  let depth = 0;
+  for (const char of match[3] ?? "") {
+    if (char === "(") depth++;
+    else if (char === ")") {
+      if (--depth < 0) throw new SourceAttention("unsupported_pnpm_package_key");
+    } else if (!depth) throw new SourceAttention("unsupported_pnpm_package_key");
+  }
+  if (depth) throw new SourceAttention("unsupported_pnpm_package_key");
   return { ecosystem: "npm", package: npmName(match[1]), version: version(match[2]) };
 }
 

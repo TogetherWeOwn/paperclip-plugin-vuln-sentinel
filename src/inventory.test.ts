@@ -671,6 +671,67 @@ describe("pnpm package peer declarations", () => {
   });
 });
 
+describe("pnpm package and snapshot locator shapes", () => {
+  function fixture(key: string, owner: "packages" | "snapshots") {
+    return JSON.stringify({ lockfileVersion: "9.0", importers: { ".": {} },
+      packages: { [owner === "packages" ? key : "lib@1.2.3"]: { resolution: { integrity: "sha512-abc=" } } },
+      snapshots: { [key]: {} } });
+  }
+
+  describe.each(["packages", "snapshots"] as const)("%s", owner => {
+    it.each(["(peer@1.0.0))", "((peer@1.0.0)", "(peer@1.0.0)outside(other@2.0.0)",
+      "(peer@1.0.0))(other@2.0.0)", "(peer\u0000)", "(peer\u001f)", "(peer\u007f)",
+      "(peer\n)", "(peer\r)", `(${"x".repeat(1018)})`])("holds an unsupported locator suffix %j", suffix => {
+      const input = snapshot({ "pnpm-lock.yaml": fixture(`lib@1.2.3${suffix}`, owner) });
+      const before = structuredClone(input);
+      const result = parseLockfileInventory(input);
+      expect(result.files[0]!.issues).toContain("unsupported_pnpm_package_key");
+      expect(result.dependencies).toEqual([]);
+      expect(result.coverage.configuredPathsParsed).toBe(false);
+      expect(parseLockfileInventory(input)).toEqual(result);
+      expect(input).toEqual(before);
+    });
+
+    it.each(["", "(peer@1.0.0)", "(@scope/peer@1.0.0)(other@2.0.0)",
+      "(peer@1.0.0(@scope/nested@2.0.0))", "(opaque-hash)", `(${"x".repeat(1017)})`,
+      `${"(".repeat(509)}x${")".repeat(509)}`])("retains balanced opaque contexts %j without peer inference", suffix => {
+      const key = `lib@1.2.3${suffix}`;
+      const result = parseFile("pnpm-lock.yaml", fixture(key, owner));
+      expect(result.files[0]!.issues).toEqual([]);
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies).toEqual([{ ecosystem: "npm", package: "lib", version: "1.2.3", scope: "unknown", direct: null,
+        locations: [{ path: "pnpm-lock.yaml", locator: owner === "packages" ? key : "lib@1.2.3" }] }]);
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+    });
+  });
+
+  it("preserves scoped names, prereleases, build metadata and separate valid context locations", () => {
+    const keys = ["@scope/lib@1.2.3-beta+one(@scope/peer@2.0.0)", "@scope/lib@1.2.3-beta+one(peer@3.0.0(nested@4.0.0))"];
+    const content = JSON.stringify({ lockfileVersion: "9.0", importers: { ".": {} },
+      packages: Object.fromEntries(keys.map(key => [key, { resolution: { integrity: "sha512-abc=" } }])),
+      snapshots: Object.fromEntries(keys.map(key => [key, {}])) });
+    const result = parseFile("pnpm-lock.yaml", content);
+    expect(result.files[0]!.issues).toEqual([]);
+    expect(result.dependencies).toEqual([{ ecosystem: "npm", package: "@scope/lib", version: "1.2.3-beta+one", scope: "unknown", direct: null,
+      locations: keys.map(locator => ({ path: "pnpm-lock.yaml", locator })) }]);
+  });
+
+  it("checks keys before an unverified resolution can skip the package", () => {
+    const content = JSON.parse(fixture("lib@1.2.3(peer\u0000)", "packages"));
+    content.packages["lib@1.2.3(peer\u0000)"].resolution = { tarball: "https://example.com/lib.tgz" };
+    expectAttention("pnpm-lock.yaml", JSON.stringify(content), "unsupported_pnpm_package_key");
+  });
+
+  it("discards malformed locator-file positives but retains independent-file inventory", () => {
+    const result = parseLockfileInventory(snapshot({ "pnpm-lock.yaml": fixture("lib@1.2.3(peer))", "snapshots"),
+      "nested/package-lock.json": npm({ "node_modules/lib": npmRow() }) }));
+    expect(result.files.find(file => file.path === "pnpm-lock.yaml")!.issues).toEqual(["unsupported_pnpm_package_key"]);
+    expect(result.dependencies).toHaveLength(1);
+    expect(result.dependencies[0]!.locations).toEqual([{ path: "nested/package-lock.json", locator: "node_modules/lib" }]);
+  });
+});
+
 describe("pnpm v9 entries", () => {
   it("parses every registry tuple with scopes, aliases and peer suffixes", () => {
     const result = parseFile("pnpm-lock.yaml", pnpm);
@@ -739,7 +800,7 @@ describe("pnpm v9 entries", () => {
       const result = parseFile("pnpm-lock.yaml", JSON.stringify(content));
       expect(result.coverage.configuredPathsParsed).toBe(length === 1024);
       if (length === 1024) expect(result.dependencies[0]).toMatchObject({ package: "lib", version: "1.2.3", scope: "unknown", direct: null });
-      else expect(result.files[0]!.issues).toContain("invalid_pnpm_reference");
+      else expect(result.files[0]!.issues).toContain("unsupported_pnpm_package_key");
     }
   });
 
