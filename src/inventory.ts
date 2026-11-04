@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.4", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.5", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -90,11 +90,13 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
     if (locator.length > 1024 || locator.split("/").some(part => !part || part === "." || part === "..")) {
       throw new SourceAttention("invalid_npm_locator");
     }
-    if (row.link === true || !locator.includes("node_modules/")) {
+    const path = `/${locator}`;
+    const marker = path.lastIndexOf("/node_modules/");
+    if (row.link === true || marker < 0) {
       issues.add("local_or_workspace_package");
       continue;
     }
-    const derived = locator.slice(locator.lastIndexOf("node_modules/") + "node_modules/".length);
+    const derived = path.slice(marker + "/node_modules/".length);
     const installedName = npmName(derived);
     // npm aliases record the real registry package name in the installed row.
     const name = row.name === undefined ? installedName : npmName(row.name);

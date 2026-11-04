@@ -212,6 +212,55 @@ describe("npm lockfile entries", () => {
     expect(result.files[0]!.issues).toContain("npm_tarball_identity_mismatch");
   });
 
+  it.each([
+    "not_node_modules/lib", "packages/not_node_modules/lib", "packages/custom_node_modules/@scope/lib",
+    "node_modules-helper/not_node_modules/lib",
+  ])("does not derive an installed registry identity from the substring in %s", locator => {
+    const name = locator.includes("@scope/") ? "@scope/lib" : "lib";
+    const result = parseNpm({ [locator]: npmRow(name) });
+    expect(result.dependencies).toEqual([]);
+    expect(result.files[0]!.issues).toContain("local_or_workspace_package");
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+  });
+
+  it.each([
+    "node_modules/parent/not_node_modules/lib", "packages/app/node_modules/parent/not_node_modules/@scope/lib",
+  ])("does not let a later substring hide the malformed installed suffix in %s", locator => {
+    const result = parseNpm({ [locator]: npmRow(locator.includes("@scope/") ? "@scope/lib" : "lib") });
+    expect(result.dependencies).toEqual([]);
+    expect(result.files[0]!.issues).toContain("invalid_npm_name");
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+  });
+
+  it.each([
+    "node_modules/lib", "node_modules/parent/node_modules/lib",
+    "packages/not_node_modules/node_modules/lib", "packages/app/node_modules/@scope/lib",
+  ])("retains exact node_modules path segments in %s without owner inference", locator => {
+    const name = locator.includes("@scope/") ? "@scope/lib" : "lib";
+    const result = parseNpm({ [locator]: npmRow(name) });
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies).toEqual([{
+      ecosystem: "npm", package: name, version: "1.2.3", scope: "unknown", direct: null,
+      locations: [{ path: "package-lock.json", locator }],
+    }]);
+  });
+
+  it("retains independent valid positives while holding lookalike local paths", () => {
+    const result = parseNpm({ "not_node_modules/lib": npmRow(), "node_modules/other": npmRow("other") });
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.files[0]!.issues).toEqual(["local_or_workspace_package"]);
+  });
+
+  it("discards a malformed installed suffix without losing another file's positives", () => {
+    const result = parseLockfileInventory(snapshot({
+      "package-lock.json": npm({ "node_modules/good": npmRow("good"), "node_modules/parent/not_node_modules/lib": npmRow() }),
+      "nested/package-lock.json": npm({ "node_modules/other": npmRow("other") }),
+    }));
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+    expect(result.files.find(file => file.path === "package-lock.json")!.issues).toContain("invalid_npm_name");
+  });
+
   it("retains registry entries but holds links/workspaces", () => {
     const result = parseNpm({ "node_modules/lib": npmRow(), "node_modules/local": { link: true, resolved: "packages/local" }, "packages/local": { version: "1.0.0" } });
     expect(result.dependencies).toHaveLength(1);

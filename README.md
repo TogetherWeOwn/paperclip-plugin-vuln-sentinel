@@ -720,8 +720,15 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.4` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.5` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
+
+npm installation locators require an exact `node_modules` path segment, not a
+substring such as `not_node_modules/lib`. Paths without that segment stay local/
+workspace attention and do not supply a registry query tuple; a malformed suffix
+after a real segment discards the file's partial parse. Scoped names, nested
+installations and workspace-prefixed locations retain their exact paths. This is
+location syntax only, not verified workspace/owner association or directness.
 
 npm and pnpm each allow at most 10,000 dependency references per file across all
 `dependencies`, `devDependencies` and `optionalDependencies` maps. npm counts both
@@ -781,7 +788,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.4` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.5` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs
