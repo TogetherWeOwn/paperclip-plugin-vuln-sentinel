@@ -1,6 +1,8 @@
 export { DependabotSource, validateDependabotSnapshot } from "./dependabot.js";
 export type { DependabotRead, DependabotAlert, DependabotSnapshot } from "./dependabot.js";
 export { DependabotJournal } from "./dependabot-journal.js";
+export { DependabotContext } from "./dependabot-context.js";
+export type { DependabotTupleContext, DependabotAlertContext, DependabotRepositoryContext } from "./dependabot-context.js";
 export { decide } from "./matcher.js";
 export { aggregateFindingInputs, versionInputs } from "./version-set.js";
 export { ThreatFeeds, parseKev, enrichThreats, enrichThreatInputs, validateThreatSnapshot } from "./threat-feeds.js";
@@ -8,6 +10,8 @@ export type { KevSnapshot, EpssModel, EpssSnapshot, ThreatSnapshot } from "./thr
 export { ThreatJournal } from "./threat-journal.js";
 export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
+export { RepositoryScan } from "./repository-scan.js";
+export type { RepositoryScanOptions, RepositoryScanResult } from "./repository-scan.js";
 export { SourceDecisions } from "./source-decisions.js";
 export type { SourceDecisionResult } from "./source-decisions.js";
 export { SourceEffects } from "./source-effects.js";

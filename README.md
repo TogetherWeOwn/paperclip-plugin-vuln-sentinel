@@ -37,7 +37,8 @@ Implemented:
   replay-safe inserts and readback validation before returning normalized inputs.
 - Read-only organization Dependabot alert traversal with bound cursor pagination,
   separate unavailable/attention states and immutable company-scoped raw evidence.
-  This is not source switching, repository coverage or artifact-bound enrichment.
+  Exact-path installed-tuple context is available separately; neither library is
+  source switching, repository coverage or policy enrichment.
 - Bounded recursive OSV alias/upstream hydration, explicit unavailable documents,
   raw/derived graph checks and conservative connected-source normalization.
 - Read-only KEV and date-pinned EPSS adapters, all-alias enrichment and immutable
@@ -56,6 +57,10 @@ Implemented:
   parent references, current and historical freshness checks, and coverage attention.
 - Same-action all-version reduction for identical non-version context, retaining
   every tuple/proof/trace in one deterministic journal revision before routing.
+- Retained Dependabot observations joined to exact current repository/lockfile path,
+  package/version/location context, with explicit unsupported and nonmatching states.
+- Explicit OSV→retained feeds→source-fenced local decision/routing scan orchestration,
+  with current-source/deadline checks and no native publication or enabled pilot.
 
 Still required before installation/pilot acceptance: runtime discovery/source-poll
 wiring, manifest/workspace association, other lockfile formats and complete coverage, live source-pinned publication wiring
@@ -174,6 +179,36 @@ negative decision, source-selection fence, HTTP callback or publication integrat
 Content hashes do not authenticate a producer. Retention/capacity health, verified
 repository coverage and artifact-bound source normalization/switching remain runtime
 prerequisites; this library is not enabled or pilot acceptance.
+
+`DependabotContext.bind(currentSource, dependabotSnapshotId)` reads only retained,
+company-scoped evidence and revalidates the full current source before and after the
+join. The org query must start at/after source-poll completion, finish by now and be
+no more than one day old. Even empty observations need these checks. Organization,
+source token/revision, immutable lockfile snapshot/digest/commit and raw alert snapshot
+references are retained in a versioned deterministic context hash; replay does not
+restamp the observed time. A later poll selecting identical bytes is a different
+selection, not permission to reuse an earlier query as current.
+
+An alert's reported manifest path must **exactly equal** a selected, successfully
+parsed lockfile path. No `package.json`→`package-lock.json`, root→workspace, case-folded
+or other manifest association is guessed. Exact package identity selects every
+candidate installed version and all its locators in that file, not the same package
+in another file. Stable npm versions support only a bounded conjunction of explicit
+GitHub comparators; prereleases, other grammar and other ecosystems remain unknown.
+Every candidate tuple is retained, including nonmatching versions. Nonmatches are
+context, never a negative applicability proof. Fixed/dismissed/withdrawn observations,
+missing files/packages and partial inventories remain attention, not resolution.
+
+Derived context is bounded to 8 MiB, checking expansion incrementally; exceeding
+capacity holds the whole result rather than silently truncating alerts or tuples.
+The output is always `attention`. A `matched_observation` means only that an open
+observation matches these installed tuples; GitHub supplies no commit-bound alert
+receipt or point-in-time consistent org view. Reported scope/relationship and patch
+hints remain raw hints, **not** applied policy or a verified compatible fix. This is
+not full alias closure, repository visibility, independently verified manifest/workspace
+association, source switching, authentication, a publication permit or a rescan. It
+writes no decisions, routing, issue claims or new mutable latest-source state. The
+immutable parents suffice to reproduce the context; there is no context callback.
 
 REA angle: reused the shipped GitHub Upstream fixed-origin/redirect refusal and explicit
 rate-limit classification, plus this package's bounded HTTP and immutable namespace
@@ -513,6 +548,46 @@ findings from valid parsed entries remain actionable local members despite other
 parse gaps. Empty results never remove/resolve prior membership or establish
 runtime absence. No native issue claim, lookup, create/update, remediation,
 dismissal, production effect, assignment, scanner or inference call occurs.
+
+### Explicit OSV repository scan library (not an enabled pilot)
+
+`RepositoryScan.run(currentSource, {epssDate, epssModel})` composes the existing OSV,
+feed, immutable journal and source-fenced local decision/routing libraries. It takes
+an already selected source, not arbitrary package tuples or caller-normalized findings.
+The future runtime must first obtain a fresh fenced selection through the repository
+sync; this helper does not discover repos, fetch lockfiles, schedule scans or choose a
+provider. OSV remains the only policy source here. Dependabot context is deliberately
+separate until alias/policy reconciliation and source switching are implemented.
+
+It queries every retained inventory tuple and hydrates OSV's observed alias graph,
+requests EPSS for every CVE including unavailable linked IDs, and fetches KEV. Feed
+requests finish before recording the OSV observation time. Raw OSV and feed evidence
+are both durably saved before `SourceDecisions` derives any local projection. Missing
+scores preserve severity fallback; the caller must supply independently verified
+model/date config. Test mappings are not live verification. No GitHub credential is
+accepted by this helper or sent to OSV/FIRST/CISA.
+
+Current source is checked around stages and before return, including empty scans.
+The 10-minute invocation bound is checked around asynchronous source validation;
+individual adapters retain their shorter request/query budgets. This is not hard
+cancellation of submitted reads or storage calls. Supersession, provider/storage
+failure or elapsed/retrograde clock prevents a completed report result. Raw evidence
+or earlier individually fenced local projections may already be durable; the batch
+is not atomic. Current replay repairs local membership without creating issues.
+
+Results retain immutable evidence IDs, coverage attention, dependency/observation/
+decision counters and scan start/end times. These are invocation counts, not new
+cards, enabled-pilot counters or a pilot-start timestamp. Even two offline sequential
+or overlapping calls are not real two-run zero-duplicate acceptance. Empty later
+scans never remove or resolve prior membership. The result explicitly retains
+`native_publication_disabled`, `dependabot_source_switch_not_enabled` and
+`enabled_pilot_not_run`. No issue transport, worker entrypoint, settlement verifier,
+rescan callback, managed resource, scheduler or inference client is wired here.
+
+REA angle: compose existing installed-SDK namespace journals and source-fenced reducers;
+keep source discovery, policy, native effects and trusted host settlement as separate
+boundaries rather than building a second scheduler or allowing a raw callback to
+assert coverage. Tests use PGlite and fake provider HTTP only.
 
 ### Retained KEV and EPSS evidence, before runtime refresh
 
