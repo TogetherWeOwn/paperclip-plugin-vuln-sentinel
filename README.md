@@ -117,6 +117,43 @@ REA angle: reuse the pinned SemVer library's precedence comparator and OSV's pub
 schema/pseudocode; validate canonical input explicitly rather than relying on its
 permissive parser or adding another matching engine.
 
+## Offline reported OSV fixing boundaries
+
+`observeOsvFixes(snapshot, dependency)` validates the complete retained raw/derived
+snapshot and requires the exact queried package/version tuple. For stable canonical
+npm versions, it observes strictly newer `fixed` boundaries only in supported SEMVER
+ranges that affect the installed tuple and exclude the boundary itself. Enumerations,
+`limit`, `last_affected`, unsupported/malformed ranges, unrelated packages, withdrawn
+records and ranges that do not affect the tuple cannot supply fixing candidates.
+Prerelease/build-version contexts and other ecosystems remain unsupported here, even
+though the applicability evaluator supports valid npm prerelease/build ordering.
+
+Every candidate is then checked against **every active source in its alias/upstream
+closure**, including all matching affected rows and enumerated versions. Results
+retain per-source `affected`/`outside`/`unknown` observations: a positive conflict wins,
+and missing/unsupported aliases prevent an all-outside result. Disconnected advisory
+groups stay separate. Exact raw advisory hashes/revisions, snapshot/query identity and
+observer/evaluator versions remain available for deterministic offline replay.
+
+`outside_reported_ranges` is only a reported-source observation. It is **not** release
+availability, manifest/workspace compatibility, complete source discovery, fresh/current
+source selection, producer authentication, runtime safety or remediation evidence. Every
+report is `attention` with `compatibleFixVerified: false`. No candidate is selected as
+a recommendation or fed to matcher rule 6; the normalizer's `fixedVersion` remains null.
+Verified manifest constraints, release availability and compatible all-version context
+still need independent integration. The observer accepts no HTTP, DB, issue or runtime
+port, mutates no snapshot/projection and cannot resolve findings or release either pin.
+
+The observer fails rather than truncating at 100 unique candidates per group, 100,000
+weighted evaluation work units or 1 MiB expanded report data. Tests cover alias conflicts,
+missing sources, exact package binding, malformed/non-fixing events, unsupported contexts,
+replay/input immutability and each capacity hold. These are not enabled scans or pilot
+acceptance; publication remains NOT ADMISSIBLE/off.
+
+REA angle: reuse retained raw OSV records, existing alias closure and the conservative
+versioned range evaluator, without another matcher, package-manager execution, registry
+request, scheduler, dependency or authority record.
+
 ## Retained OSV severity enrichment
 
 OSV normalization now combines reported qualitative severity and strict CVSS v3.0/
