@@ -35,7 +35,7 @@ describe("immutable source journal", () => {
     const recorded = await journal.recordOsv("company", lockfileId, sourceOsv());
     expect(recorded.inputs).toHaveLength(1);
     expect(recorded.inputs[0]!.provenance).toMatchObject({
-      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.8", semver: "7.7.4" },
+      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.9", semver: "7.7.4" },
     });
     const saved = (await journal.readOsv("company", recorded.snapshotId))!;
     expect(saved.scan.osv).toEqual(sourceOsv());
@@ -86,7 +86,7 @@ describe("immutable source journal", () => {
     expect(stored.inventory.files[0]!.issues).toEqual(["invalid_npm_dependency_reference"]);
     expect(stored.inventory.dependencies).toEqual([]);
     expect(stored.inventory.coverage.configuredPathsParsed).toBe(false);
-    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.8");
+    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.9");
     await expect(journal.recordOsv("company", ids[0]!, sourceOsv())).rejects.toThrow("osv_inventory_coverage_mismatch");
     expect(lockfiles).toEqual(before);
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
@@ -111,7 +111,7 @@ describe("immutable source journal", () => {
     expect(stored.inventory.dependencies).toEqual([]);
     expect(stored.inventory.coverage.configuredPathsParsed).toBe(false);
     expect(stored.inventory.coverage.fullDependencyClosure).toBe("not_proven");
-    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.8");
+    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.9");
     await expect(journal.recordOsv("company", ids[0]!, sourceOsv())).rejects.toThrow("osv_inventory_coverage_mismatch");
     expect(await journal.recordLockfiles("company", lockfiles)).toBe(ids[0]);
     expect(lockfiles).toEqual(before);
@@ -135,7 +135,7 @@ describe("immutable source journal", () => {
     expect(stored.inventory.files[0]!.issues).toEqual(["unsupported_pnpm_yaml_key"]);
     expect(stored.inventory.dependencies).toEqual([]);
     expect(stored.inventory.coverage.configuredPathsParsed).toBe(false);
-    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.8");
+    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.9");
     await expect(journal.recordOsv("company", ids[0]!, sourceOsv())).rejects.toThrow("osv_inventory_coverage_mismatch");
     expect(await journal.recordLockfiles("company", lockfiles)).toBe(ids[0]);
     expect(lockfiles).toEqual(before);
@@ -161,7 +161,7 @@ describe("immutable source journal", () => {
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(0);
   });
 
-  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7"])("holds historical parser %s drift without rewriting evidence and appends a distinct current inventory", async parser => {
+  it.each(["0.1.0", "0.1.1", "0.1.2", "0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7", "0.1.8"])("holds historical parser %s drift without rewriting evidence and appends a distinct current inventory", async parser => {
     const lockfiles = sourceLockfiles();
     const id = await journal.recordLockfiles("company", lockfiles);
     const legacy = structuredClone((await journal.readLockfiles("company", id))!);
@@ -199,6 +199,32 @@ describe("immutable source journal", () => {
     await expect(journal.recordOsv("company", ids[0]!, sourceOsv())).rejects.toThrow("osv_inventory_coverage_mismatch");
     expect(lockfiles).toEqual(before);
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
+  });
+
+  it("retains malformed enclosing npm locators through concurrent replay without fabricated coverage or policy writes", async () => {
+    const lockfiles = sourceLockfiles();
+    const file = lockfiles.files[0]!;
+    file.content = file.content.replace('"node_modules/lib"', '"node_modules/parent/extra/node_modules/lib"');
+    file.sha256 = sha256(file.content);
+    file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
+    lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
+    const before = structuredClone(lockfiles);
+    const ids = await Promise.all(Array.from({ length: 5 }, () => journal.recordLockfiles("company", lockfiles)));
+    expect(new Set(ids).size).toBe(1);
+    const stored = (await new SourceJournal(db, now).readLockfiles("company", ids[0]!))!;
+    expect(stored.lockfiles).toEqual(before);
+    expect(stored.inventory.dependencies).toEqual([]);
+    expect(stored.inventory.files[0]!.issues).toEqual(["invalid_npm_locator"]);
+    expect(stored.inventory.coverage.configuredPathsParsed).toBe(false);
+    expect(stored.inventory.coverage.fullDependencyClosure).toBe("not_proven");
+    expect(stored.inventory.toolVersions["vuln-sentinel-inventory"]).toBe("0.1.9");
+    await expect(journal.recordOsv("company", ids[0]!, sourceOsv())).rejects.toThrow("osv_inventory_coverage_mismatch");
+    expect(await journal.recordLockfiles("company", lockfiles)).toBe(ids[0]);
+    expect(lockfiles).toEqual(before);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
+    for (const table of ["delivery_routing", "decision_records"]) {
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
+    }
   });
 
   it("retains Cargo reference gaps through concurrent immutable replay without policy or routing writes", async () => {

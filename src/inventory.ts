@@ -11,7 +11,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.8", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.9", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -88,7 +88,8 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
   if (!packages.has("")) throw new SourceAttention("missing_npm_root");
   for (const [locator, row] of packages) {
     if (!locator) continue;
-    if (locator.length > 1024 || locator.split("/").some(part => !part || part === "." || part === "..")) {
+    if (locator.length > 1024 || /[\\\u0000-\u001f\u007f]/u.test(locator)
+      || locator.split("/").some(part => !part || part === "." || part === "..")) {
       throw new SourceAttention("invalid_npm_locator");
     }
     const path = `/${locator}`;
@@ -99,6 +100,15 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
     }
     const derived = path.slice(marker + "/node_modules/".length);
     const installedName = npmName(derived);
+    // Validate every installed package segment, not just the final nested name.
+    const parts = locator.split("/");
+    for (let index = parts.indexOf("node_modules"); index < parts.length;) {
+      if (parts[index++] !== "node_modules") throw new SourceAttention("invalid_npm_locator");
+      const end = index + (parts[index]?.startsWith("@") ? 2 : 1);
+      const name = parts.slice(index, end).join("/");
+      if (name.length > 214 || !NPM_NAME.test(name)) throw new SourceAttention("invalid_npm_locator");
+      index = end;
+    }
     // npm aliases record the real registry package name in the installed row.
     const name = row.name === undefined ? installedName : npmName(row.name);
     if (!registryTarball(row.resolved)) {

@@ -297,6 +297,57 @@ describe("npm lockfile entries", () => {
     expect(result.files.find(file => file.path === "package-lock.json")!.issues).toContain("invalid_npm_name");
   });
 
+  describe.each([2, 3])("version %i complete npm installation locators", lockfileVersion => {
+    it.each([
+      "node_modules/parent/extra/node_modules/lib", "node_modules/@scope/parent/extra/node_modules/lib",
+      "node_modules/parent/not_node_modules/other/node_modules/lib", "node_modules/node_modules/lib",
+      "node_modules/@scope/node_modules/lib", "node_modules/PARENT/node_modules/lib",
+      "packages/app/node_modules/parent/extra/node_modules/lib",
+      "node_modules/parent\\other/node_modules/lib", "node_modules/parent\u0000/node_modules/lib",
+      "packages/app\\other/node_modules/lib", "packages/app\nother/node_modules/lib",
+    ])("holds malformed enclosing path %j even when the final name is valid", locator => {
+      const result = parseNpm({ "node_modules/good": npmRow("good"), [locator]: npmRow() }, lockfileVersion);
+      expect(result.coverage.configuredPathsParsed).toBe(false);
+      expect(result.files[0]!.issues).toContain("invalid_npm_locator");
+      expect(result.dependencies).toEqual([]);
+    });
+
+    it.each([
+      "node_modules/parent/node_modules/lib", "node_modules/@scope/parent/node_modules/lib",
+      "node_modules/parent/node_modules/@scope/lib",
+      "node_modules/@first/parent/node_modules/@second/parent/node_modules/@scope/lib",
+      "packages/custom_node_modules/app/node_modules/@scope/parent/node_modules/lib",
+    ])("retains complete scoped and workspace-prefixed path %s without inferring owner edges", locator => {
+      const name = locator.endsWith("/@scope/lib") ? "@scope/lib" : "lib";
+      const input = snapshot({ "npm-shrinkwrap.json": npm({ [locator]: npmRow(name) }, lockfileVersion) });
+      const before = structuredClone(input);
+      const result = parseLockfileInventory(input);
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies).toEqual([{
+        ecosystem: "npm", package: name, version: "1.2.3", scope: "unknown", direct: null,
+        locations: [{ path: "npm-shrinkwrap.json", locator }],
+      }]);
+      expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+      expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+      expect(input).toEqual(before);
+      expect(parseLockfileInventory(input)).toEqual(result);
+    });
+  });
+
+  it("preserves independent file positives when an enclosing npm installation path is malformed", () => {
+    const input = snapshot({
+      "npm-shrinkwrap.json": npm({ "node_modules/good": npmRow("good"), "node_modules/parent/extra/node_modules/lib": npmRow() }),
+      "other/package-lock.json": npm({ "node_modules/other": npmRow("other") }),
+    });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files.find(file => file.path === "npm-shrinkwrap.json")!.issues).toEqual(["invalid_npm_locator"]);
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+    expect(input).toEqual(before);
+    expect(parseLockfileInventory(input)).toEqual(result);
+  });
+
   it("retains registry entries but holds links/workspaces", () => {
     const result = parseNpm({ "node_modules/lib": npmRow(), "node_modules/local": { link: true, resolved: "packages/local" }, "packages/local": { version: "1.0.0" } });
     expect(result.dependencies).toHaveLength(1);
