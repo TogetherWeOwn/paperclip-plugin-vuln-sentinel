@@ -1,4 +1,10 @@
 export { decide } from "./matcher.js";
+export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
+export type { OsvDependency, OsvRecord, OsvSnapshot } from "./osv.js";
+export { GitHubLockfiles } from "./github-lockfiles.js";
+export type { RepositorySource, RepositoryLockfiles, LockfileBlob } from "./github-lockfiles.js";
+export { SourceAttention } from "./source-http.js";
+export type { SourceFetch } from "./source-http.js";
 export { aliasClosure, canonicalJson, findingIdentity, sha256 } from "./identity.js";
 export { osvVersionStatus } from "./ranges.js";
 export { DecisionJournal } from "./journal.js";

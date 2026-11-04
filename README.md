@@ -7,7 +7,8 @@ Deterministic vulnerability matching and report-only triage for Paperclip.
 **Core implementation only; not an installable plugin or an enabled pilot yet.**
 There is deliberately no worker/manifest entrypoint. Nothing schedules scans,
 contacts an advisory provider, mutates a repository, or creates live issues just
-by importing this package or running its tests.
+by importing this package or running its tests. Explicit read-only source adapters
+accept an injected HTTP transport; all adapter tests use fake responses.
 
 Implemented:
 
@@ -27,12 +28,16 @@ Implemented:
   history, conservative reopening and unrelated resolved-member isolation. This is
   a trusted-adapter library boundary, not a live scanner callback endpoint.
 
-Still required before installation/pilot acceptance: source ingestion and runtime
-validation, GitHub default-SHA/ETag caching, OSV querybatch and Dependabot switching,
-KEV/EPSS refresh, live rescan receipt verification, manifest/jobs and weekly job
-scheduling, managed triage project, health/counters, operator runbook and installation,
-and two real consecutive report-only scans. No worker is wired to the explicit
-publication API; no weekly batch or per-finding issue has been emitted on a live host.
+- Read-only GitHub default-SHA/ETag lockfile snapshots, content/hash validation,
+  bounded OSV querybatch pagination/detail hydration and conservative normalization.
+
+Still required before installation/pilot acceptance: lockfile inventory parsing and
+coverage, recursive upstream/alias hydration, durable source snapshot/cache storage,
+verified scope/fix/severity enrichment, Dependabot permission switching, KEV/EPSS
+refresh, live rescan receipt verification, manifest/jobs and weekly job scheduling,
+managed triage project, health/counters, operator runbook and installation, and two
+real consecutive report-only scans. No worker is wired to the explicit publication
+API; no weekly batch or per-finding issue has been emitted on a live host.
 
 ## Development
 
@@ -62,9 +67,10 @@ without opening a host database or executing any writes there.
 ## Rule and evidence contract
 
 `decide(FindingInput)` takes a **normalized, validated evidence bundle**, not raw
-scanner output or untrusted JSON. Runtime ingestion/validation is not implemented
-and no endpoint accepts such a bundle yet. Evidence-producing adapters must verify
-the claimed coverage rather than inferring it from an empty search result.
+scanner output or untrusted JSON. Source readers validate the provider structures
+described below, but the full runtime ingestion pipeline is not implemented and no
+endpoint accepts such a bundle yet. Evidence-producing adapters must verify the
+claimed coverage rather than inferring it from an empty search result.
 
 - Rule 0 retains the complete provenance bundle. A rule-1 range exclusion or
   withdrawal precedes the MAL/KEV override. MAL/KEV cannot take a later negative
@@ -98,6 +104,66 @@ with `|`. The remediation unit is `ecosystem:package@target-fixed-version` (or
 `@unfixed` when no target is known). Components reject ambiguous separators. A new
 target or changed alias minimum produces a different identity; lineage and batch
 membership must be reconciled by the later delivery layer, not silently retagged.
+
+## Read-only source adapters, before runtime integration
+
+`GitHubLockfiles.read(configuredSources, previousSnapshots)` gets all configured
+repositories' default heads in one GraphQL request. Any GraphQL error, missing head
+or repository identity mismatch holds the whole read before content fetching. It
+fetches only configured paths at immutable commit SHAs, never branch names. An
+unchanged SHA reuses validated cached bytes without a content request; a changed
+SHA makes ETag-conditional reads. A 304 requires the same repository/path's cached
+ETag and verified content. Missing files, permission/rate errors and malformed
+responses never silently reuse an older artifact or certify complete coverage.
+
+Content requires a complete base64 UTF-8 file, exact byte size and matching Git
+blob SHA-1; each file also stores SHA-256. The aggregate artifact digest binds sorted
+paths/content hashes, separately from source commit identity. Returned snapshots
+are values to persist, not a mutable latest-head cache: overlapping reads cannot
+change another read's snapshot. A later worker must persist immutable snapshots
+and select the current head safely. Configured-path coverage is NOT proof that all
+lockfiles or the full dependency closure have been discovered or parsed. These
+hashes are content bindings, not authenticated deployment receipts.
+
+`OsvSource.query(validatedDependencies)` deduplicates package tuples and makes
+100-query batches with independent per-query page tokens. It hydrates every
+returned advisory ID once, requires exact batch/detail revision equality, rejects
+future revisions and pagination cycles, and retains raw advisory JSON plus
+canonical-content SHA-256 and a timestamped snapshot hash. Sub-millisecond revision
+precision is retained. Failure returns attention, not a partial successful scan.
+The returned records reconcile aliases/upstream edges among retrieved advisories;
+recursive hydration of additional alias/upstream records is still required.
+
+`osvFindingInputs(snapshot, lockfileContext)` checks snapshot integrity and binds
+conservative inputs to the lockfile digest. It supplies only supported range proof,
+validated withdrawal, known database severity and observed aliases. Connected
+source records produce one finding per package tuple: any active affected source
+wins, every active source must prove outside for an exclusion, and a withdrawn
+alias cannot erase an active source. The highest known active severity is retained.
+Unsupported ranges remain unknown. It does not guess dependency scope, directness, compatible
+fixes, CVSS scores, function/platform/Go proof, KEV or EPSS. KEV absence therefore
+continues to force residual unknown under the existing matcher. Full scope/fix/feed
+and alias-closure enrichment is required before publishing pilot decisions. An
+empty query result never resolves an existing member or establishes runtime safety.
+Snapshots/raw advisory content must be durably retained before journaling decisions;
+that persistence and the inventory parsers are not wired yet. Typed cached/snapshot
+arguments are internal trusted values, not raw JSON ingestion endpoints; their
+hashes are not authentication and must not be exposed as caller authorization.
+
+Both readers use fixed provider URLs, refuse redirects, sanitize transport errors,
+and perform no automatic retries. Each request is limited to 30 seconds / 4 MiB;
+an invocation is limited to 4 minutes / 128 calls, with no partial result on budget
+exhaustion. OSV limits are 2,000 dependency tuples/finding associations, 20 pages
+per query and 8 MiB retained snapshot data. GitHub limits are 50 repositories,
+10 configured paths each, 2 MiB per file and 8 MiB aggregate content. Exceeding a
+limit requires attention and future resumable polling, never truncation or safety
+inference. No credentials reach OSV; GitHub credentials are sent only to the fixed
+GitHub API origin. Tests use fake HTTP only, not provider or pilot evidence.
+
+REA angle: the shipped GitHub Upstream HTTP layer is the reference for conditional
+ETags, one GraphQL request, redirect refusal and explicit error states. This adapter
+adds immutable commit/blob binding and bounded bodies without a token broker or
+parallel scheduler.
 
 ## Durable routing, before publication
 
