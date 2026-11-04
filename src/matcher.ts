@@ -28,7 +28,8 @@ function proposedRemediation(input: FindingInput): Remediation | null {
   // Advisory-controlled strings may be displayed as commands, never evaluated.
   if (!/^[a-zA-Z0-9@/_.-]+$/.test(pkg) || pkg.startsWith("-")
     || !/^[a-zA-Z0-9][a-zA-Z0-9.+_-]*$/.test(fixedVersion)) return null;
-  if (input.direct || input.ecosystem === "npm") {
+  if (input.ecosystem !== "npm" && input.direct !== true && input.direct !== false) return null;
+  if (input.direct === true || input.ecosystem === "npm") {
     return { kind: "grouped_dependabot_security_pr", package: pkg, fixedVersion };
   }
   const command = input.ecosystem === "crates.io" ? `cargo update -p ${pkg} --precise ${fixedVersion}`

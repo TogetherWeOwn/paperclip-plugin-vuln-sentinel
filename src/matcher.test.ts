@@ -259,6 +259,80 @@ describe("deterministic report-only rules", () => {
     expect(result.proposedRemediation).toEqual({ kind: "command", command, package: pkg, fixedVersion: "1.0.1" });
   });
 
+  describe("rule 6 explicit dependency relationship", () => {
+    const unsupported = [undefined, null, "", "false", "true", 0, 1, [], {}];
+    const ecosystems = ["crates.io", "Go", "PyPI"] as const;
+    const candidate = (ecosystem: FindingInput["ecosystem"]) => finding({ ecosystem,
+      fixedVersion: "1.0.1", compatibleFixVerified: true, go: ecosystem === "Go" ? goScan() : null });
+
+    describe.each(ecosystems)("%s routing", ecosystem => {
+      it.each(unsupported.map(direct => ({ direct })))("holds fix routing for unsupported direct evidence $direct", ({ direct }) => {
+        for (const ownHits of [null, 1]) {
+          const input = candidate(ecosystem);
+          if (ownHits !== null) input.functions = { ...closure(), ownHits };
+          Object.assign(input, { direct });
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ matchedRule: 8, delivery: "finding", proposedVex: null,
+            proposedRemediation: null, applicability: ecosystem === "Go" || ownHits === 1 ? "affected" : "unknown" });
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      });
+
+      it.each([true, false])("preserves explicit direct=%s routing", direct => {
+        const input = candidate(ecosystem);
+        input.direct = direct;
+        expect(decide(input)).toMatchObject({ matchedRule: 6, proposedVex: null,
+          proposedRemediation: { kind: direct ? "grouped_dependabot_security_pr" : "command" } });
+      });
+    });
+
+    it("npm routing does not need a direct/transitive distinction", () => {
+      for (const direct of [...unsupported, true, false]) {
+        const input = candidate("npm");
+        Object.assign(input, { direct });
+        expect(decide(input)).toMatchObject({ matchedRule: 6, applicability: "unknown",
+          proposedRemediation: { kind: "grouped_dependabot_security_pr" } });
+      }
+    });
+
+    it.each(["KEV", "MAL"])("unknown direct evidence cannot alter %s P0", kind => {
+      const input = candidate("crates.io");
+      Object.assign(input, { direct: "false" });
+      if (kind === "MAL") input.aliases[0]!.aliases.push("MAL-2026-1");
+      else input.provenance.kev!.aliases = ["CVE-2026-12345"];
+      expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+        delivery: "immediate", proposedVex: null, proposedRemediation: null });
+    });
+
+    it("relationship uncertainty does not invalidate earlier independent negative proof", () => {
+      const input = candidate("crates.io");
+      Object.assign(input, { direct: null });
+      input.versionEvidence.status = "outside";
+      expect(decide(input)).toMatchObject({ matchedRule: 1, delivery: "none", proposedRemediation: null });
+      input.versionEvidence.status = "affected";
+      input.functions = closure();
+      expect(decide(input)).toMatchObject({ matchedRule: 5, applicability: "not_affected", delivery: "none",
+        proposedVex: { justification: "vulnerable_code_not_present" }, proposedRemediation: null });
+    });
+
+    it.each(ecosystems)("all-version %s action cannot guess a relationship", ecosystem => {
+      const first = candidate(ecosystem);
+      Object.assign(first, { direct: "false" });
+      const second = structuredClone(first);
+      second.version = "2.0.0";
+      const input = aggregateFindingInputs([second, first])[0]!;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions).toHaveLength(2);
+      expect(result.versionDecisions!.every(decision => decision.matchedRule === 8)).toBe(true);
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    });
+  });
+
   it("rule 6 does not propose executable advisory interpolation", () => {
     expect(decide(finding({ package: "pkg;command", fixedVersion: "1.0.1", compatibleFixVerified: true })).proposedRemediation).toBeNull();
     expect(decide(finding({ fixedVersion: "1.0.1;command", compatibleFixVerified: true })).proposedRemediation).toBeNull();

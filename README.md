@@ -1145,7 +1145,7 @@ Remediation is proposed only when actionable tuples agree, and VEX only when all
 non-dropped tuples agree on the negative proposal. All-dropped sets have no VEX or
 delivery; a negative observation still never resolves a member.
 
-Rules `1.0.6` require an own, nonblank string in `provenance.toolVersions` for
+Rules `1.0.7` require an own, nonblank string in `provenance.toolVersions` for
 bound range, platform, Go and full-closure function evidence. Inherited object
 properties and whitespace-only versions are missing provenance, not proof that
 can drop a finding or propose negative VEX. Explicit own prototype-shaped keys
@@ -1186,8 +1186,18 @@ function-absence or compatible-fix evidence. An unknown tuple cannot disappear
 beside another version proven outside the affected ranges. This does not infer
 code reachability from a version-range result or extend supported range syntax.
 
+Rule-6 routing for Rust, Go and Python requires explicit `direct: true` or
+`direct: false`. Missing and nonboolean relationship evidence cannot select a
+grouped security PR or a transitive command proposal. The finding remains
+actionable with its existing affected/unknown applicability and priority, but no
+fix proposal. Npm uses the same grouped route for direct and transitive packages,
+so that route does not depend on the relationship discriminator. Earlier valid
+negative proofs and MAL/KEV P0 precedence remain unchanged. This check does not
+establish installed ownership or compatibility and does not rewrite historical
+inputs or decisions.
+
 The journal stores one complete set/decision revision, with a versioned
-`1.0.6+all-versions.1` reducer, input hash and each tuple's decision hash,
+`1.0.7+all-versions.1` reducer, input hash and each tuple's decision hash,
 applicability and rule trace. Tuple enumeration order does not change the action
 or hash. No tuple-level decision head competes with the aggregate via timestamp
 or lexical hash ordering. Current poll/lockfile/OSV/feed references apply to every

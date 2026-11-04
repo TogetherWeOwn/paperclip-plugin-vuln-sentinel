@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.6+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.7+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -120,7 +120,7 @@ describe("same-action all-version aggregation", () => {
       }
     }
     const result = decide(group(inputs));
-    expect(result).toMatchObject({ rulesVersion: "1.0.6+all-versions.1", applicability: "unknown",
+    expect(result).toMatchObject({ rulesVersion: "1.0.7+all-versions.1", applicability: "unknown",
       matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions).toHaveLength(2);
     for (const decision of result.versionDecisions!) {
