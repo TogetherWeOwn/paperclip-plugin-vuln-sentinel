@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalJson, findingIdentity, sha256 } from "./identity.js";
 import { decide } from "./matcher.js";
 import type { FindingInput, VersionSetInput } from "./model.js";
-import { binding, closure, finding } from "./test/fixtures.js";
+import { binding, closure, finding, goScan } from "./test/fixtures.js";
 import { aggregateFindingInputs, versionInputs } from "./version-set.js";
 
 const tuple = (version: string, status: FindingInput["versionEvidence"]["status"], patch: Partial<FindingInput> = {}) => finding({
@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.3+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.4+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -120,7 +120,7 @@ describe("same-action all-version aggregation", () => {
       }
     }
     const result = decide(group(inputs));
-    expect(result).toMatchObject({ rulesVersion: "1.0.3+all-versions.1", applicability: "unknown",
+    expect(result).toMatchObject({ rulesVersion: "1.0.4+all-versions.1", applicability: "unknown",
       matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions).toHaveLength(2);
     for (const decision of result.versionDecisions!) {
@@ -135,6 +135,19 @@ describe("same-action all-version aggregation", () => {
     const before = structuredClone(input);
     const result = decide(input);
     expect(result).toMatchObject({ applicability: "unknown", matchedRule: 8, delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
+    expect(input).toEqual(before);
+    expect(decide(structuredClone(input))).toEqual(result);
+  });
+
+  it.each(["status", "reflectOrUnsafe"] as const)("holds all-version Go VEX when %s is missing", field => {
+    const patch = { ecosystem: "Go" as const, go: { ...goScan(), status: "package_only" as const } };
+    Reflect.deleteProperty(patch.go, field);
+    const input = group([tuple("1", "outside", patch), tuple("2", "affected", patch)]);
+    const before = structuredClone(input);
+    const result = decide(input);
+    expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
       proposedVex: null, proposedRemediation: null });
     expect(result.versionDecisions!.map(decision => decision.applicability)).toEqual(["dropped", "unknown"]);
     expect(input).toEqual(before);

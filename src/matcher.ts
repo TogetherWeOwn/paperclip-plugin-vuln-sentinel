@@ -139,10 +139,11 @@ function decideVersion(raw: FindingInput): Decision {
   let skipFunctions = false;
   if (input.ecosystem === "Go") {
     const scan = input.go;
-    if (!scan || !bound(input, scan) || scan.tool !== "govulncheck" || scan.status === "failed"
+    if (!scan || !bound(input, scan) || scan.tool !== "govulncheck"
+      || !["symbol_hit", "package_only", "module_only"].includes(scan.status)
       || !input.buildTargets.length || !sameSet(scan.targets, input.buildTargets)
       || !sameSet(scan.tags, input.deployedTags)) return residual("govulncheck coverage incomplete or mismatched");
-    if (scan.reflectOrUnsafe) return residual("Reflect/unsafe requires residual review");
+    if (scan.reflectOrUnsafe !== false) return residual("Reflect/unsafe present or unknown; requires residual review");
     if (scan.status === "symbol_hit") {
       trace.push(4);
       applicability = "affected";

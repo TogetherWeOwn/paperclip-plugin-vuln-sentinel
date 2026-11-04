@@ -90,6 +90,54 @@ describe("deterministic report-only rules", () => {
     });
   });
 
+  it.each([undefined, null, "", " ", "no_hits", "SYMBOL_HIT", false, 0, {}])(
+    "rule 4 missing/unsupported Go status %j cannot prove symbol absence or propose a fix", status => {
+      const input = finding({ ecosystem: "Go", go: goScan(), functions: closure(),
+        fixedVersion: "1.0.1", compatibleFixVerified: true });
+      Object.assign(input.go!, { status });
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["symbol_hit", "package_only", "module_only"] as const)(
+    "rule 4 %s requires explicit reflect/unsafe evidence", status => {
+      for (const reflectOrUnsafe of [undefined, null, "", "false", 0]) {
+        const input = finding({ ecosystem: "Go", go: { ...goScan(), status }, functions: closure(),
+          fixedVersion: "1.0.1", compatibleFixVerified: true });
+        Object.assign(input.go!, { reflectOrUnsafe });
+        expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+      }
+    },
+  );
+
+  it.each(["KEV", "MAL"])("incomplete Go result indicators cannot suppress %s P0", kind => {
+    const input = urgent();
+    Object.assign(input, { ecosystem: "Go", go: goScan() });
+    Reflect.deleteProperty(input.go!, "status");
+    Reflect.deleteProperty(input.go!, "reflectOrUnsafe");
+    if (kind === "MAL") {
+      input.provenance.kev = null;
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["outside", "withdrawn"])("rule 1 %s still precedes incomplete Go results", kind => {
+    const input = finding({ ecosystem: "Go", go: goScan() });
+    Reflect.deleteProperty(input.go!, "status");
+    Reflect.deleteProperty(input.go!, "reflectOrUnsafe");
+    if (kind === "outside") input.versionEvidence.status = "outside";
+    else input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
   it("rule 4 symbol hit jumps over contradictory function absence to remediation", () => {
     const result = decide(finding({ ecosystem: "Go", go: goScan(), functions: closure(), fixedVersion: "1.0.1", compatibleFixVerified: true }));
     expect(result).toMatchObject({ matchedRule: 6, applicability: "affected", proposedVex: null });
