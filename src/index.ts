@@ -38,7 +38,7 @@ export type { RepositorySource, RepositoryLockfiles, LockfileBlob } from "./gith
 export { SourceAttention } from "./source-http.js";
 export type { SourceFetch } from "./source-http.js";
 export { aliasClosure, canonicalJson, findingIdentity, sha256 } from "./identity.js";
-export { osvVersionStatus } from "./ranges.js";
+export { osvVersionStatus, OSV_RANGES_VERSION } from "./ranges.js";
 export { DecisionJournal } from "./journal.js";
 export { ContainerPublication } from "./publication.js";
 export type { RescanEvidence, ResolutionRecord } from "./rescan.js";

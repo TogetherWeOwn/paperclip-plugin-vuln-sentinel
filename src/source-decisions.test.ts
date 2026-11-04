@@ -159,6 +159,36 @@ describe("retained source decision orchestration", () => {
     expect(await records("card_claims")).toHaveLength(0);
   });
 
+  it.each([
+    { events: [{ introduced: "0" }, { fixed: "v1.0.0" }], status: "unknown" },
+    { events: [{ introduced: "0" }, { fixed: "1.0.0" }, { introduced: "1.1.0" }, { last_affected: "1.1.1" }], status: "unknown" },
+    { events: [{ introduced: "0" }, { limit: "1.0.0" }, { limit: "*" }], status: "affected" },
+  ])("retains corrected range evidence and evaluator version across concurrent replay: %j", async ({ events, status }) => {
+    const selected = await ready();
+    const osv = snapshot();
+    osv.records[0] = parseOsvRecord({ ...osv.records[0]!.raw, affected: [{
+      package: { name: "lib", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events }],
+    }] }, "GHSA-fixture");
+    const before = structuredClone(osv.records[0]);
+    const scan = await sources.recordOsv("company", selected.snapshotId, rehash(osv));
+    const e = { selected, scanId: scan.snapshotId, threatId: await feed() };
+    await Promise.all([observe(e), observe(e)]);
+    const state = await routing.snapshot("company", configured.repo);
+    expect(state.members).toHaveLength(1);
+    expect(state.containers).toHaveLength(1);
+    const stored = (await new DecisionJournal(db).latest("company", state.members[0]!.currentOriginId))!;
+    expect(stored.input_bundle).toMatchObject({ versionEvidence: { status, complete: status !== "unknown" },
+      fixedVersion: null, scope: "unknown", compatibleFixVerified: false,
+      provenance: { osvSnapshotId: scan.snapshotId, toolVersions: { "vuln-sentinel-osv-ranges": "1.1.0" } } });
+    expect(stored.decision_bundle.applicability).toBe("unknown");
+    expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
+    expect(osv.records[0]).toEqual(before);
+    await observe(e);
+    expect(await records("decision_records")).toHaveLength(1);
+    expect(await records("card_claims")).toEqual([]);
+    expect(await routing.snapshot("company", configured.repo)).toEqual(state);
+  });
+
   it("sequential and concurrent replay preserve one decision, member and original container", async () => {
     const e = await evidence();
     await observe(e);

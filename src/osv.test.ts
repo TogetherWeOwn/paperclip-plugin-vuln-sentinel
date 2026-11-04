@@ -3,6 +3,7 @@ import { decide } from "./matcher.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { OsvSource, osvFindingInputs, parseOsvRecord, type OsvDependency } from "./osv.js";
 import { sourceBudget, sourceRequest, timestamp, type SourceFetch } from "./source-http.js";
+import type { OsvRange } from "./ranges.js";
 
 const modified = "2026-11-03T00:00:00.000Z";
 const observedAt = "2026-11-04T04:00:00.000Z";
@@ -11,7 +12,7 @@ const context = { repo: "example/repo", artifactDigest: `sha256:${"a".repeat(64)
 const now = () => new Date(observedAt);
 const advisory = (id = "GHSA-example") => ({
   id, modified, aliases: [] as string[], database_specific: { severity: "HIGH" },
-  affected: [{ package: { ecosystem: "npm", name: "example" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] }] }],
+  affected: [{ package: { ecosystem: "npm", name: "example" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "2.0.0" }] as OsvRange["events"] }] }],
 });
 const json = (data: unknown) => new Response(JSON.stringify(data));
 function transport(responses: Array<unknown | Response>) {
@@ -187,6 +188,34 @@ describe("bounded OSV source ingestion", () => {
     const { snapshotSha256: _, ...content } = result;
     result.snapshotSha256 = sha256(canonicalJson(content));
     expect(decide(osvFindingInputs(result, context)[0]!).applicability).toBe("dropped");
+  });
+
+  it.each([
+    [{ introduced: "0" }, { fixed: "v1.0.0" }],
+    [{ introduced: "0" }, { fixed: "1.0" }],
+    [{ introduced: "0" }, { fixed: "1.0.0" }, { introduced: "1.1.0" }, { last_affected: "1.1.1" }],
+  ])("malformed range evidence cannot reach rule 1 after raw-source replay: %j", async (...events) => {
+    const raw = advisory();
+    raw.affected[0]!.ranges[0]!.events = events;
+    const result = await snapshot(raw);
+    const before = structuredClone(result);
+    const input = osvFindingInputs(result, context)[0]!;
+    expect(input.versionEvidence).toMatchObject({ status: "unknown", complete: false });
+    expect(input.provenance.toolVersions["vuln-sentinel-osv-ranges"]).toBe("1.1.0");
+    expect(decide(input)).toMatchObject({ applicability: "unknown", matchedRule: 8 });
+    expect(osvFindingInputs(result, context)).toEqual([input]);
+    expect(result).toEqual(before);
+  });
+
+  it("replays range-wide limit constraints without inferring a fix or resolution", async () => {
+    const raw = advisory();
+    raw.affected[0]!.ranges[0]!.events = [{ introduced: "0" }, { limit: "*" }, { limit: "1.0.0" }];
+    const input = osvFindingInputs(await snapshot(raw), context)[0]!;
+    expect(input.versionEvidence.status).toBe("affected");
+    expect(input.fixedVersion).toBeNull();
+    expect(input.compatibleFixVerified).toBe(false);
+    expect(input.scope).toBe("unknown");
+    expect(decide(input).applicability).not.toBe("dropped");
   });
 
   it("keeps unsupported ecosystem ranges unknown and never invents runtime evidence", async () => {

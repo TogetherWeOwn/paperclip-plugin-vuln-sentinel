@@ -1,6 +1,6 @@
 import { aliasClosure, canonicalJson, sha256 } from "./identity.js";
 import type { Advisory, Ecosystem, FindingInput } from "./model.js";
-import { osvVersionStatus, type OsvAffected } from "./ranges.js";
+import { OSV_RANGES_VERSION, osvVersionStatus, type OsvAffected } from "./ranges.js";
 import { observeOsvSeverity, OSV_SEVERITY_VERSION } from "./osv-severity.js";
 import { object, SourceAttention, sourceBudget, text, timestamp, type SourceFetch } from "./source-http.js";
 
@@ -318,7 +318,8 @@ export function osvFindingInputs(
           observedAt, artifactDigest: context.artifactDigest, artifactKind: "lockfile",
           source: { kind: "osv", queriedAt: snapshot.queriedAt, snapshotSha256 },
           epss: null, kev: null, severityAttention,
-          toolVersions: { "vuln-sentinel-osv": VERSION, "vuln-sentinel-osv-severity": OSV_SEVERITY_VERSION },
+          toolVersions: { "vuln-sentinel-osv": VERSION, "vuln-sentinel-osv-severity": OSV_SEVERITY_VERSION,
+            "vuln-sentinel-osv-ranges": OSV_RANGES_VERSION },
         },
       } satisfies FindingInput;
     });

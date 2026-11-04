@@ -84,6 +84,39 @@ managed triage project, health/counters, operator runbook and installation, and 
 real consecutive report-only scans. No worker is wired to the explicit publication
 API; no weekly batch or per-finding issue has been emitted on a live host.
 
+## Conservative OSV range proofs
+
+The npm `SEMVER` evaluator follows [OSV's range/event and evaluation semantics](https://ossf.github.io/osv-schema/).
+Version strings must be strict SemVer 2.0.0, not values silently normalized from a
+leading `v`, whitespace or partial version. Valid prereleases use SemVer precedence;
+valid build metadata is preserved during validation and ignored for range ordering.
+A malformed installed version or npm version enumeration cannot establish exclusion.
+An exact reported positive remains positive; enumerations and ranges are additive.
+
+`limit` is a range-wide constraint, not a fixing version or an interval closer.
+A candidate must precede **any** explicit limit (or the implicit infinite limit
+when none are present). The bare `*` limit is supported as infinity. Limits can
+appear anywhere without changing the introduction/fix timeline. Missing introductions,
+mixed `fixed`/`last_affected`, malformed events and unsupported syntax remain unknown,
+even when a limit alone would exclude the candidate. Non-limit timelines must still
+be ordered and alternating; unsorted/ambiguous streams and non-bare wildcard limits
+are conservatively unknown rather than guessed. Other ecosystems/range types are
+still unsupported by the range comparator, not silently treated as npm SemVer.
+
+Every newly normalized input retains `vuln-sentinel-osv-ranges: 1.1.0` in tool
+provenance. Raw records, raw snapshot identities, schema and SQL writers are unchanged;
+historical decisions are not rewritten. Corrected observations produce new versioned
+inputs through the existing source fences. No range result supplies a verified fix,
+runtime safety, a rescan receipt, member resolution or publication authority.
+
+Offline coverage includes strict-version failures, prerelease/build boundaries,
+range-wide limits, mixed-event rejection, a 432-case boundary grid and retained-source
+concurrent replay. These tests are not real scans or pilot acceptance.
+
+REA angle: reuse the pinned SemVer library's precedence comparator and OSV's published
+schema/pseudocode; validate canonical input explicitly rather than relying on its
+permissive parser or adding another matching engine.
+
 ## Retained OSV severity enrichment
 
 OSV normalization now combines reported qualitative severity and strict CVSS v3.0/
