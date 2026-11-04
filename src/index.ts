@@ -15,6 +15,8 @@ export { SourceJournal } from "./source-journal.js";
 export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";
 export { OsvSource, osvFindingInputs, parseOsvRecord } from "./osv.js";
 export type { OsvDependency, OsvRecord, OsvSnapshot } from "./osv.js";
+export { GitHubRepositoryDiscovery, discoveryCoverage, validateRepositoryDiscovery } from "./github-discovery.js";
+export type { RepositoryDiscovery, RepositoryTreeEntry, DiscoveryCoverage } from "./github-discovery.js";
 export { GitHubLockfiles } from "./github-lockfiles.js";
 export type { RepositorySource, RepositoryLockfiles, LockfileBlob } from "./github-lockfiles.js";
 export { SourceAttention } from "./source-http.js";

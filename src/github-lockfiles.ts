@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { discoveryCoverage, validateRepositoryDiscovery, type RepositoryDiscovery } from "./github-discovery.js";
+import { repository } from "./github-repository.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { object, SourceAttention, sourceBudget, text, type SourceFetch } from "./source-http.js";
 
@@ -24,12 +26,6 @@ export interface RepositoryLockfiles {
   defaultBranch: string;
   artifactDigest: string;
   files: LockfileBlob[];
-}
-
-function repository(value: string): string {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9_.-]{1,100}$/u.test(value)
-    || value.endsWith("/.") || value.endsWith("/..")) throw new SourceAttention("invalid_repository");
-  return value.toLowerCase();
 }
 
 function path(value: string): string {
@@ -78,6 +74,21 @@ export class GitHubLockfiles {
   constructor(private readonly fetch: SourceFetch, private readonly token: string) {}
 
   async read(sources: RepositorySource[], previous: RepositoryLockfiles[] = []): Promise<RepositoryLockfiles[]> {
+    return this.readSelected(sources, previous);
+  }
+
+  async readDiscovered(discoveries: RepositoryDiscovery[], previous: RepositoryLockfiles[] = []): Promise<RepositoryLockfiles[]> {
+    if (!Array.isArray(discoveries) || discoveries.length > 50) throw new SourceAttention("repository_capacity");
+    const selected = discoveries.map(validateRepositoryDiscovery);
+    const sources = selected.map(snapshot => {
+      const coverage = discoveryCoverage(snapshot);
+      if (coverage.attention.length) throw new SourceAttention("discovery_coverage_attention");
+      return { repo: snapshot.repo, paths: coverage.supportedLockfiles };
+    });
+    return this.readSelected(sources, previous, selected);
+  }
+
+  private async readSelected(sources: RepositorySource[], previous: RepositoryLockfiles[], discoveries?: RepositoryDiscovery[]): Promise<RepositoryLockfiles[]> {
     if (previous.length > 50) throw new SourceAttention("repository_capacity");
     const normalized = normalizeRepositorySources(sources);
     const cache = new Map<string, RepositoryLockfiles>();
@@ -97,37 +108,8 @@ export class GitHubLockfiles {
       "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "Paperclip-vuln-sentinel/0.1.0",
     };
     if (this.token) headers.Authorization = `Bearer ${this.token}`;
-    const declarations: string[] = [];
-    const selections: string[] = [];
-    const variables: Record<string, string> = {};
-    normalized.forEach((source, index) => {
-      declarations.push(`$owner${index}: String!`, `$name${index}: String!`);
-      const [owner, name] = source.repo.split("/");
-      variables[`owner${index}`] = owner!;
-      variables[`name${index}`] = name!;
-      selections.push(`repo${index}: repository(owner: $owner${index}, name: $name${index}) { nameWithOwner defaultBranchRef { name target { ... on Commit { oid } } } }`);
-    });
-    const response = await request(`${BASE}/graphql`, {
-      method: "POST", headers,
-      body: JSON.stringify({ query: `query DefaultHeads(${declarations.join(", ")}) { ${selections.join(" ")} }`, variables }),
-    });
-    if (response.status !== 200) throw new SourceAttention(`github_heads_http_${response.status}`);
-    const body = object(response.body, "invalid_heads_response");
-    if (body.errors !== undefined && body.errors !== null
-      && (!Array.isArray(body.errors) || body.errors.length)) throw new SourceAttention("github_graphql_errors");
-    const data = object(body.data, "missing_heads_data");
-    // Validate all heads before fetching any content; partial GraphQL data cannot certify coverage.
-    const heads = normalized.map((source, index) => {
-      const repo = object(data[`repo${index}`], "missing_repository_head");
-      if (typeof repo.nameWithOwner !== "string" || repo.nameWithOwner.toLowerCase() !== source.repo) {
-        throw new SourceAttention("repository_identity_mismatch");
-      }
-      const branch = object(repo.defaultBranchRef, "missing_default_branch");
-      const target = object(branch.target, "missing_head_target");
-      const sourceSha = text(target.oid, "invalid_source_sha", 40);
-      if (!SHA.test(sourceSha)) throw new SourceAttention("invalid_source_sha");
-      return { sourceSha, defaultBranch: text(branch.name, "invalid_default_branch", 256) };
-    });
+    const heads = discoveries?.map(({ sourceSha, defaultBranch }) => ({ sourceSha, defaultBranch }))
+      ?? await this.readHeads(normalized, request, headers);
     const snapshots: RepositoryLockfiles[] = [];
     let totalBytes = 0;
     for (const [index, source] of normalized.entries()) {
@@ -169,6 +151,11 @@ export class GitHubLockfiles {
             validateBlob(file);
           }
         }
+        const discovered = discoveries?.[index]?.entries.find(entry => entry.path === filePath);
+        if (discoveries && (!discovered || discovered.type !== "blob" || discovered.mode === "120000"
+          || discovered.sha !== file.blobSha || (discovered.size !== null && discovered.size !== Buffer.byteLength(file.content)))) {
+          throw new SourceAttention("discovered_blob_mismatch");
+        }
         totalBytes += Buffer.byteLength(file.content);
         if (totalBytes > 8 * 1024 * 1024) throw new SourceAttention("lockfile_snapshot_capacity");
         files.push(file);
@@ -176,5 +163,39 @@ export class GitHubLockfiles {
       snapshots.push({ ...head, repo: source.repo, files, artifactDigest: digest(files) });
     }
     return snapshots;
+  }
+
+  private async readHeads(sources: RepositorySource[], request: ReturnType<typeof sourceBudget>, headers: Record<string, string>) {
+    const declarations: string[] = [];
+    const selections: string[] = [];
+    const variables: Record<string, string> = {};
+    sources.forEach((source, index) => {
+      declarations.push(`$owner${index}: String!`, `$name${index}: String!`);
+      const [owner, name] = source.repo.split("/");
+      variables[`owner${index}`] = owner!;
+      variables[`name${index}`] = name!;
+      selections.push(`repo${index}: repository(owner: $owner${index}, name: $name${index}) { nameWithOwner defaultBranchRef { name target { ... on Commit { oid } } } }`);
+    });
+    const response = await request(`${BASE}/graphql`, {
+      method: "POST", headers,
+      body: JSON.stringify({ query: `query DefaultHeads(${declarations.join(", ")}) { ${selections.join(" ")} }`, variables }),
+    });
+    if (response.status !== 200) throw new SourceAttention(`github_heads_http_${response.status}`);
+    const body = object(response.body, "invalid_heads_response");
+    if (body.errors !== undefined && body.errors !== null
+      && (!Array.isArray(body.errors) || body.errors.length)) throw new SourceAttention("github_graphql_errors");
+    const data = object(body.data, "missing_heads_data");
+    // Validate all heads before fetching any content; partial GraphQL data cannot certify coverage.
+    return sources.map((source, index) => {
+      const repo = object(data[`repo${index}`], "missing_repository_head");
+      if (typeof repo.nameWithOwner !== "string" || repo.nameWithOwner.toLowerCase() !== source.repo) {
+        throw new SourceAttention("repository_identity_mismatch");
+      }
+      const branch = object(repo.defaultBranchRef, "missing_default_branch");
+      const target = object(branch.target, "missing_head_target");
+      const sourceSha = text(target.oid, "invalid_source_sha", 40);
+      if (!SHA.test(sourceSha)) throw new SourceAttention("invalid_source_sha");
+      return { sourceSha, defaultBranch: text(branch.name, "invalid_default_branch", 256) };
+    });
   }
 }

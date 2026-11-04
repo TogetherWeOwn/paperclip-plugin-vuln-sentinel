@@ -28,8 +28,9 @@ Implemented:
   history, conservative reopening and unrelated resolved-member isolation. This is
   a trusted-adapter library boundary, not a live scanner callback endpoint.
 
-- Read-only GitHub default-SHA/ETag lockfile snapshots, content/hash validation,
-  bounded OSV querybatch pagination/detail hydration and conservative normalization.
+- Read-only immutable GitHub tracked-tree manifest/lockfile discovery, exact-tree
+  content binding, default-SHA/ETag snapshots, bounded OSV querybatch pagination/detail
+  hydration and conservative normalization.
 - npm v2/v3, pnpm v9 and Cargo v3/v4 locked-entry inventories with explicit attention
   states and no inferred runtime/development scope or full-closure completeness.
 - Immutable raw lockfile/inventory and OSV source journal, exact query-tuple coverage,
@@ -52,8 +53,8 @@ Implemented:
 - Same-action all-version reduction for identical non-version context, retaining
   every tuple/proof/trace in one deterministic journal revision before routing.
 
-Still required before installation/pilot acceptance: repository/manifest discovery,
-other lockfile formats and complete coverage, live source-pinned publication wiring
+Still required before installation/pilot acceptance: durable discovery/source-poll
+integration, manifest/workspace association, other lockfile formats and complete coverage, live source-pinned publication wiring
 and trusted host-effect settlement verification, verified scope/fix/severity enrichment
 (including incompatible per-version contexts),
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
@@ -129,6 +130,36 @@ target or changed alias minimum produces a different identity; lineage and batch
 membership must be reconciled by the later delivery layer, not silently retagged.
 
 ## Read-only source adapters, before runtime integration
+
+`GitHubRepositoryDiscovery.read(repositories, previousDiscoveries)` gets default commit
+and root-tree identities for all selected repositories in one GraphQL call, validating
+every head before requesting trees. Recursive trees use immutable tree IDs. Truncated,
+missing, malformed, duplicate-path, orphaned-parent and over-capacity responses hold the
+invocation; they never certify empty/complete coverage. Validated unchanged-commit trees
+can be reused without a tree request; changed commits require a new tree read. A commit
+whose tree identity disagrees with its cached identity is held.
+
+Discovery retains canonical tracked entry metadata with a versioned content hash.
+`discoveryCoverage` inventories known manifest and supported/unsupported lockfile names,
+including nested paths, without executing or fetching repository code. Symlinks and
+submodules are not followed; unsupported formats/paths, unbound manifests, too many
+lockfiles and oversized lockfiles remain attention. Only same-directory filename
+candidates avoid a missing-binding hold: a root lockfile does not silently prove a nested
+workspace manifest is covered. Even a candidate does not prove actual manifest/dependency
+association. Known filenames are not an exhaustive inventory of every artifact class.
+Coverage is explicitly **tracked tree only**, never full dependency sources or runtime
+completeness. Ignored/generated files, external dependency sources and submodules are not
+scanned by this reader.
+
+`GitHubLockfiles.readDiscovered(discoveries, previousSnapshots)` uses the exact discovered
+commit without a second heads query. Before content requests, discovery attention holds
+the whole read. Each fetched, cached or ETag-reused file must also match its discovered
+Git blob identity and any reported size. Valid bytes from a different tree cannot pass
+merely because their own content hash is valid. The existing immutable content/cache
+checks remain unchanged. Both APIs use bounded fixed-provider HTTP and fake tests only;
+no worker wires them yet. Discovery snapshots still need durable retention and integration
+with source-poll selection before runtime use. A supplied hash is not authentication,
+and discovery is not a current-source publication permit.
 
 `GitHubLockfiles.read(configuredSources, previousSnapshots)` gets all configured
 repositories' default heads in one GraphQL request. Any GraphQL error, missing head
@@ -216,8 +247,8 @@ remain `not_proven`. Every dependency's scope is `unknown` and directness is uns
 dev/platform flags, peer context, lockfile-only presence or native absence do not
 justify lowering priority, VEX or runtime resolution. Unknown sources/coverage must
 be surfaced by runtime health as attention, not an empty successful scan. Go,
-Python, other lockfile schemas, verified scope/directness and discovery remain
-unimplemented. Inventories are bounded at 10,000 entries / 2,000 unique query tuples;
+Python, other lockfile schemas, verified scope/directness and discovery/runtime
+integration remain unimplemented. Inventories are bounded at 10,000 entries / 2,000 unique query tuples;
 limits never silently truncate into a completeness claim.
 
 `SourceJournal.recordLockfiles(companyId, snapshot)` durably saves raw bytes plus
