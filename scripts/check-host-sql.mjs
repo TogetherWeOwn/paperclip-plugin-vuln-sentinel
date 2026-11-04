@@ -215,4 +215,18 @@ if (orchestrated.counters.decisions !== 1 || orchestrated.counters.dependencies 
   || storedDecision.decision_bundle.applicability !== "unknown") {
   throw new Error("Host-validator fixture did not exercise complete all-version retained-source orchestration");
 }
+const discoveryBundle = { version: 1, repo: configured.repo, sourceSha: "b".repeat(40), treeSha: "c".repeat(40), defaultBranch: "main",
+  entries: [{ path: populatedFile.path, mode: "100644", type: "blob", sha: populatedFile.blobSha, size: Buffer.byteLength(populatedContent) }] };
+const discoveryId = await sources.recordDiscovery("fixture-company", {
+  ...discoveryBundle, sha256: sha256(canonicalJson(["repository-discovery-v1", discoveryBundle])),
+});
+const discoveryPoll = await polls.beginDiscovery("fixture-company", configured.repo);
+await polls.cachedDiscovery(discoveryPoll);
+const boundPoll = await polls.bindDiscovery(discoveryPoll, discoveryId);
+const boundLockfileId = await sources.recordLockfiles("fixture-company", (await sources.readLockfiles("fixture-company", populatedId)).lockfiles, discoveryId);
+await polls.complete(boundPoll, boundLockfileId);
+const boundSelection = await polls.current("fixture-company", configured);
+await polls.assertCurrent(boundSelection);
+if (boundSelection.stored.discoverySnapshotId !== discoveryId) throw new Error("Host-validator fixture lost discovery binding");
+await effects.reserve(boundSelection, { executionId: "fixture-discovered", originId: "d".repeat(64), publicationRevision: 1, contentSha256: "e".repeat(64) });
 console.log(`Installed host validators accepted ${count} migration/runtime statements; namespace and parameters match. No host database writes.`);

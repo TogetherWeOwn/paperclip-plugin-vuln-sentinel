@@ -40,7 +40,8 @@ Implemented:
 - Read-only KEV and date-pinned EPSS adapters, all-alias enrichment and immutable
   company-scoped feed evidence before decisions. No API/model-version guessing.
 - Durable company/repository source-poll fences and explicit GitHub→raw-source
-  synchronization, with separate cache-only and freshness-bounded source selection.
+  synchronization, including discovery reservations before network I/O, retained
+  discovery→content binding and separate cache-only/freshness-bounded selection.
   Late older success/failure cannot replace a newer poll's selected source or hold.
 - Source-fenced local decision-head/routing writes, with same-statement source row
   locking, DB poll-revision ordering and retained source-selection provenance.
@@ -53,8 +54,8 @@ Implemented:
 - Same-action all-version reduction for identical non-version context, retaining
   every tuple/proof/trace in one deterministic journal revision before routing.
 
-Still required before installation/pilot acceptance: durable discovery/source-poll
-integration, manifest/workspace association, other lockfile formats and complete coverage, live source-pinned publication wiring
+Still required before installation/pilot acceptance: runtime discovery/source-poll
+wiring, manifest/workspace association, other lockfile formats and complete coverage, live source-pinned publication wiring
 and trusted host-effect settlement verification, verified scope/fix/severity enrichment
 (including incompatible per-version contexts),
 Dependabot permission switching, scheduled KEV/EPSS refresh and verified live model
@@ -157,9 +158,32 @@ the whole read. Each fetched, cached or ETag-reused file must also match its dis
 Git blob identity and any reported size. Valid bytes from a different tree cannot pass
 merely because their own content hash is valid. The existing immutable content/cache
 checks remain unchanged. Both APIs use bounded fixed-provider HTTP and fake tests only;
-no worker wires them yet. Discovery snapshots still need durable retention and integration
-with source-poll selection before runtime use. A supplied hash is not authentication,
-and discovery is not a current-source publication permit.
+no worker wires them yet. `DiscoveredRepositorySourceSync` supplies durable discovery and
+source-poll integration as an explicit library operation, described below. A supplied
+hash is not authentication, and discovery is not a current-source publication permit.
+
+`DiscoveredRepositorySourceSync.read(companyId, repositories)` reserves a discovering
+poll for every repository **before any network request**, fencing older ready evidence
+even while the new paths are unknown. One GraphQL request obtains heads; cached validated
+discovery can avoid unchanged tree reads. Every returned discovery is retained in the
+company-scoped source journal before any content read. Coverage attention holds the
+whole batch; supported paths are never silently selected around unsupported/unbound
+entries. The poll binds the exact retained discovery and its complete supported path
+set under its original token before content fetching at the discovered commit.
+
+Lockfile/inventory records bind the discovery snapshot ID. Both insertion and later
+readback revalidate repository, commit, branch, exact file set, blob identity and size.
+Only matching discovery-bound completion may select that poll. Same-statement downstream
+source fences include this binding. Changed trees/paths cannot reuse an obsolete configured
+subset, and same-content/different-commit evidence retains distinct source identities.
+Restarting the adapters reuses only validated immutable discovery/content as cache material;
+current readiness and freshness still require a new completed poll. Lost responses,
+persistence failures and stale invocations leave attention or an unfinished poll, not an
+older ready selection. A publication pin also prevents beginning a discovery poll.
+
+This is not an enabled job, atomic multi-repository publication, actual manifest/workspace
+association, exhaustive artifact inventory, full dependency closure or runtime completeness.
+Parsed inventory coverage remains conservative. No issue effect or member resolution occurs.
 
 `GitHubLockfiles.read(configuredSources, previousSnapshots)` gets all configured
 repositories' default heads in one GraphQL request. Any GraphQL error, missing head
@@ -697,6 +721,16 @@ Replay repairs a crash/lost response between the two cleanup writes and cannot
 clear a newer token. A result, age, timeout, worker death or empty lookup is not
 settlement. The verifier must establish no sender can resume and no host request
 can commit late; caller strings and hashes cannot prove either fact.
+
+The required trusted boundary is publication-scoped admission and durable accounting
+outside the worker's writable namespace: register every attempt before forwarding,
+reject duplicate/late sends, join full handler/descendant completion, irreversibly
+close the exact invocation, and expose authenticated evidence to a later verifier.
+Positive acknowledgements alone are insufficient without a complete final attempt
+set. A truly empty invocation still needs positive closure/completeness proof.
+Unknown sends, lost outcomes and incomplete crash recovery retain the pins; there
+is no automatic ambiguous-create retry. Existing in-memory RPC/handler tracking
+and cooperative drain are reusable hooks, not durable settlement certificates.
 
 No installed verifier, worker or callback endpoint is supplied here. Execution
 references must come from the trusted host integration, never raw caller JSON.

@@ -1,5 +1,6 @@
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { DATABASE_NAMESPACE } from "./claims.js";
+import { discoveryCoverage, validateRepositoryDiscovery, type RepositoryDiscovery } from "./github-discovery.js";
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { parseLockfileInventory, type LockfileInventory } from "./inventory.js";
@@ -10,6 +11,7 @@ import { SourceAttention, timestamp } from "./source-http.js";
 export interface StoredLockfiles {
   lockfiles: RepositoryLockfiles;
   inventory: LockfileInventory;
+  discoverySnapshotId?: string;
 }
 
 export interface StoredOsvScan {
@@ -20,10 +22,10 @@ export interface StoredOsvScan {
 
 interface SourceRow {
   snapshot_id: string;
-  source_kind: "lockfiles" | "osv";
+  source_kind: "lockfiles" | "osv" | "discovery";
   repo: string;
   source_sha: string;
-  bundle: StoredLockfiles | StoredOsvScan;
+  bundle: StoredLockfiles | StoredOsvScan | RepositoryDiscovery;
 }
 
 function snapshotId(kind: SourceRow["source_kind"], bundle: SourceRow["bundle"]): string {
@@ -80,10 +82,42 @@ export class SourceJournal {
     return row;
   }
 
-  async recordLockfiles(companyId: string, lockfiles: RepositoryLockfiles): Promise<string> {
+  async recordDiscovery(companyId: string, discovery: RepositoryDiscovery): Promise<string> {
+    const copy = validateRepositoryDiscovery(discovery);
+    return this.insert(companyId, "discovery", copy.repo, copy.sourceSha, copy);
+  }
+
+  async readDiscovery(companyId: string, id: string): Promise<RepositoryDiscovery | null> {
+    const row = await this.read(companyId, id, "discovery");
+    if (!row) return null;
+    const discovery = validateRepositoryDiscovery(row.bundle as RepositoryDiscovery);
+    if (discovery.repo !== row.repo || discovery.sourceSha !== row.source_sha) throw new SourceAttention("stored_discovery_mismatch");
+    return discovery;
+  }
+
+  private async bindDiscovery(companyId: string, lockfiles: RepositoryLockfiles, id: string): Promise<void> {
+    const discovery = await this.readDiscovery(companyId, id);
+    if (!discovery || discovery.repo !== lockfiles.repo || discovery.sourceSha !== lockfiles.sourceSha
+      || discovery.defaultBranch !== lockfiles.defaultBranch) throw new SourceAttention("source_discovery_binding_mismatch");
+    const coverage = discoveryCoverage(discovery);
+    if (coverage.attention.length || canonicalJson(lockfiles.files.map(file => file.path).sort()) !== canonicalJson(coverage.supportedLockfiles)) {
+      throw new SourceAttention("source_discovery_coverage_mismatch");
+    }
+    for (const file of lockfiles.files) {
+      const entry = discovery.entries.find(entry => entry.path === file.path)!;
+      if (entry.sha !== file.blobSha || (entry.size !== null && entry.size !== Buffer.byteLength(file.content))) {
+        throw new SourceAttention("discovered_blob_mismatch");
+      }
+    }
+  }
+
+  async recordLockfiles(companyId: string, lockfiles: RepositoryLockfiles, discoverySnapshotId?: string): Promise<string> {
     const copy = structuredClone(lockfiles);
     const inventory = parseLockfileInventory(copy);
-    return this.insert(companyId, "lockfiles", copy.repo, copy.sourceSha, { lockfiles: copy, inventory });
+    if (discoverySnapshotId !== undefined) await this.bindDiscovery(companyId, copy, discoverySnapshotId);
+    return this.insert(companyId, "lockfiles", copy.repo, copy.sourceSha, { lockfiles: copy, inventory,
+      ...(discoverySnapshotId === undefined ? {} : { discoverySnapshotId }),
+    });
   }
 
   async readLockfiles(companyId: string, id: string): Promise<StoredLockfiles | null> {
@@ -94,6 +128,7 @@ export class SourceJournal {
       || canonicalJson(parseLockfileInventory(bundle.lockfiles)) !== canonicalJson(bundle.inventory)) {
       throw new SourceAttention("stored_inventory_mismatch");
     }
+    if (bundle.discoverySnapshotId !== undefined) await this.bindDiscovery(companyId, bundle.lockfiles, bundle.discoverySnapshotId);
     return bundle;
   }
 

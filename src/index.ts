@@ -10,6 +10,7 @@ export type { SourceDecisionResult } from "./source-decisions.js";
 export { SourceEffects } from "./source-effects.js";
 export type { SourceEffectIntent, SourceEffectBarrier } from "./source-effects.js";
 export { SourcePollStore, RepositorySourceSync } from "./source-polls.js";
+export { DiscoveredRepositorySourceSync } from "./discovered-source-sync.js";
 export type { SourcePoll, CurrentSource } from "./source-polls.js";
 export { SourceJournal } from "./source-journal.js";
 export type { StoredLockfiles, StoredOsvScan } from "./source-journal.js";

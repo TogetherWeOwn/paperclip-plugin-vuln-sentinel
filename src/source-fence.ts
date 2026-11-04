@@ -24,6 +24,7 @@ export function sourceFence(selected: CurrentSource, firstParameter: number): { 
       version: 1, cacheSnapshotId: selected.snapshotId, attempt: {
         token: selected.token, source: selected.source, state: "ready", startedAt: selected.startedAt,
         completedAt: selected.completedAt, snapshotId: selected.snapshotId, attentionCode: null,
+        ...(selected.stored.discoverySnapshotId === undefined ? {} : { discoverySnapshotId: selected.stored.discoverySnapshotId }),
       },
     })],
   };

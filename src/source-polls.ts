@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { DATABASE_NAMESPACE } from "./claims.js";
+import { discoveryCoverage, type RepositoryDiscovery } from "./github-discovery.js";
 import { GitHubLockfiles, normalizeRepositorySources, type RepositorySource, type RepositoryLockfiles } from "./github-lockfiles.js";
+import { repository } from "./github-repository.js";
 import { canonicalJson } from "./identity.js";
 import { SourceJournal, type StoredLockfiles } from "./source-journal.js";
 import { SourceAttention, text, timestamp } from "./source-http.js";
@@ -28,7 +30,8 @@ export interface CurrentSource extends SourcePoll {
 interface Attempt {
   token: string;
   source: RepositorySource;
-  state: "polling" | "ready" | "attention";
+  state: "discovering" | "polling" | "ready" | "attention";
+  discoverySnapshotId?: string;
   startedAt: string;
   completedAt: string | null;
   snapshotId: string | null;
@@ -43,6 +46,9 @@ interface Row { revision: number; bundle: PollState; effect_barrier: unknown | n
 const empty = (): PollState => ({ version: 1, cacheSnapshotId: null, attempt: null });
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
 const source = (value: RepositorySource) => normalizeRepositorySources([value])[0]!;
+// Empty paths are a reservation before discovery, never a ready source configuration.
+const pollSource = (value: RepositorySource): RepositorySource => Array.isArray(value.paths) && !value.paths.length
+  ? { repo: repository(value.repo), paths: [] } : source(value);
 
 /** DB ordering, not commit lexicography or caller timestamps, selects the last-started poll. */
 export class SourcePollStore {
@@ -66,12 +72,15 @@ export class SourcePollStore {
       || (state.cacheSnapshotId !== null && !ID.test(state.cacheSnapshotId))) throw new SourceAttention("invalid_source_poll");
     if (state.attempt !== null) {
       const attempt = state.attempt;
-      if (!attempt || !TOKEN.test(attempt.token) || !same(source(attempt.source), attempt.source)
-        || attempt.source.repo !== repo || !["polling", "ready", "attention"].includes(attempt.state)) {
+      if (!attempt || !TOKEN.test(attempt.token) || !same(pollSource(attempt.source), attempt.source)
+        || attempt.source.repo !== repo || !["discovering", "polling", "ready", "attention"].includes(attempt.state)
+        || (attempt.discoverySnapshotId !== undefined && !ID.test(attempt.discoverySnapshotId))
+        || (attempt.state === "discovering" && (attempt.source.paths.length || attempt.discoverySnapshotId !== undefined))
+        || (["polling", "ready"].includes(attempt.state) && !attempt.source.paths.length)) {
         throw new SourceAttention("invalid_source_poll");
       }
       timestamp(attempt.startedAt, "invalid_source_poll_time");
-      if (attempt.state === "polling") {
+      if (attempt.state === "polling" || attempt.state === "discovering") {
         if (attempt.completedAt !== null || attempt.snapshotId !== null || attempt.attentionCode !== null) {
           throw new SourceAttention("invalid_source_poll");
         }
@@ -98,7 +107,14 @@ export class SourcePollStore {
   }
 
   async begin(companyId: string, configured: RepositorySource): Promise<SourcePoll> {
-    const normalized = source(configured);
+    return this.beginAttempt(companyId, source(configured), "polling");
+  }
+
+  async beginDiscovery(companyId: string, repo: string): Promise<SourcePoll> {
+    return this.beginAttempt(companyId, { repo: repository(repo), paths: [] }, "discovering");
+  }
+
+  private async beginAttempt(companyId: string, normalized: RepositorySource, state: "polling" | "discovering"): Promise<SourcePoll> {
     text(companyId, "invalid_company", 256);
     await this.db.execute(
       `INSERT INTO ${this.table} (company_id, repo, bundle) VALUES ($1, $2, $3)
@@ -109,7 +125,7 @@ export class SourcePollStore {
       const row = await this.read(companyId, normalized.repo);
       if (!row) throw new SourceAttention("missing_source_poll");
       const bundle: PollState = { ...row.bundle, attempt: {
-        token, source: normalized, state: "polling", startedAt: this.now().toISOString(),
+        token, source: normalized, state, startedAt: this.now().toISOString(),
         completedAt: null, snapshotId: null, attentionCode: null,
       } };
       if (await this.change(companyId, normalized.repo, row, bundle)) return { companyId, source: normalized, token };
@@ -119,14 +135,44 @@ export class SourcePollStore {
 
   private bound(row: Row | null, poll: SourcePoll): Attempt {
     const attempt = row?.bundle.attempt;
-    if (!attempt || attempt.token !== poll.token || !same(attempt.source, source(poll.source))) {
+    if (!attempt || attempt.token !== poll.token || !same(attempt.source, pollSource(poll.source))) {
       throw new SourceAttention("source_poll_superseded");
     }
     return attempt;
   }
 
+  async bindDiscovery(poll: SourcePoll, discoverySnapshotId: string): Promise<SourcePoll> {
+    const discovery = await this.journal.readDiscovery(poll.companyId, discoverySnapshotId);
+    if (!discovery || discovery.repo !== poll.source.repo) throw new SourceAttention("source_discovery_binding_mismatch");
+    const coverage = discoveryCoverage(discovery);
+    if (coverage.attention.length) throw new SourceAttention("discovery_coverage_attention");
+    const configured = source({ repo: discovery.repo, paths: coverage.supportedLockfiles });
+    for (let retry = 0; retry < 32; retry++) {
+      const row = await this.read(poll.companyId, discovery.repo);
+      const attempt = row?.bundle.attempt;
+      if (attempt?.token === poll.token && attempt.discoverySnapshotId === discoverySnapshotId
+        && attempt.state === "polling" && same(attempt.source, configured)) return { ...poll, source: configured };
+      this.bound(row, poll);
+      if (attempt!.state !== "discovering") throw new SourceAttention("source_poll_settled");
+      if (await this.change(poll.companyId, discovery.repo, row!, { ...row!.bundle, attempt: {
+        ...attempt!, state: "polling", source: configured, discoverySnapshotId,
+      } })) return { ...poll, source: configured };
+    }
+    throw new SourceAttention("source_poll_contention");
+  }
+
+  async cachedDiscovery(poll: SourcePoll): Promise<RepositoryDiscovery | null> {
+    const row = await this.read(poll.companyId, pollSource(poll.source).repo);
+    this.bound(row, poll);
+    const id = row!.bundle.cacheSnapshotId;
+    if (!id) return null;
+    const stored = await this.journal.readLockfiles(poll.companyId, id);
+    if (!stored || stored.lockfiles.repo !== poll.source.repo) throw new SourceAttention("source_cache_binding_mismatch");
+    return stored.discoverySnapshotId === undefined ? null : this.journal.readDiscovery(poll.companyId, stored.discoverySnapshotId);
+  }
+
   async cached(poll: SourcePoll): Promise<RepositoryLockfiles | null> {
-    const row = await this.read(poll.companyId, source(poll.source).repo);
+    const row = await this.read(poll.companyId, pollSource(poll.source).repo);
     this.bound(row, poll);
     const id = row!.bundle.cacheSnapshotId;
     if (!id) return null;
@@ -146,6 +192,7 @@ export class SourcePollStore {
     for (let retry = 0; retry < 32; retry++) {
       const row = await this.read(poll.companyId, normalized.repo);
       const attempt = this.bound(row, poll);
+      if (attempt.discoverySnapshotId !== stored.discoverySnapshotId) throw new SourceAttention("source_discovery_binding_mismatch");
       if (attempt.state === "ready" && attempt.snapshotId === snapshotId) return;
       if (attempt.state !== "polling") throw new SourceAttention("source_poll_settled");
       const completedAt = this.now().toISOString();
@@ -160,7 +207,7 @@ export class SourcePollStore {
   async fail(poll: SourcePoll, attentionCode: string): Promise<void> {
     if (typeof attentionCode !== "string" || !CODE.test(attentionCode)) throw new SourceAttention("invalid_source_attention_code");
     for (let retry = 0; retry < 32; retry++) {
-      const row = await this.read(poll.companyId, source(poll.source).repo);
+      const row = await this.read(poll.companyId, pollSource(poll.source).repo);
       const attempt = this.bound(row, poll);
       if (attempt.state === "attention" && attempt.attentionCode === attentionCode) return;
       // A batch may fail after a ready write committed but its response was lost. Hold it too.
@@ -190,7 +237,7 @@ export class SourcePollStore {
     if (attempt.state !== "ready") throw new SourceAttention(attempt.state === "attention" ? "current_source_attention" : "current_source_pending");
     this.fresh(attempt, maxAgeMs);
     const stored = await this.journal.readLockfiles(companyId, attempt.snapshotId!);
-    if (!stored || stored.lockfiles.repo !== normalized.repo
+    if (!stored || stored.lockfiles.repo !== normalized.repo || stored.discoverySnapshotId !== attempt.discoverySnapshotId
       || !same(stored.lockfiles.files.map(file => file.path).sort(), normalized.paths)) throw new SourceAttention("source_poll_snapshot_mismatch");
     if ((await this.read(companyId, normalized.repo))?.revision !== row!.revision) throw new SourceAttention("source_poll_superseded");
     this.fresh(attempt, maxAgeMs);
