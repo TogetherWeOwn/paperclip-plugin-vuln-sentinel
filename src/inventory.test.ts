@@ -596,6 +596,81 @@ describe("aggregate JavaScript lockfile reference limits", () => {
   });
 });
 
+describe("pnpm package peer declarations", () => {
+  function fixture(peerDependencies: unknown, extra: Record<string, unknown> = {}) {
+    return JSON.stringify({ lockfileVersion: "9.0", importers: { ".": {} },
+      packages: { "lib@1.2.3": { resolution: { integrity: "sha512-abc=" }, peerDependencies, ...extra } },
+      snapshots: { "lib@1.2.3": {} } });
+  }
+
+  it.each([null, true, [], "lib"].map(peerDependencies => ({ peerDependencies })))(
+    "holds malformed package peer map $peerDependencies", ({ peerDependencies }) => {
+      const result = expectAttention("pnpm-lock.yaml", fixture(peerDependencies), "invalid_pnpm_dependency_map");
+      expect(result.dependencies).toEqual([]);
+    });
+
+  it.each([null, false, 1, {}, [], "x".repeat(257), "^1.0.0\n", "x\u0000", "x\u007f"].map(value => ({ value })))(
+    "holds malformed peer specifier $value", ({ value }) => {
+      const result = expectAttention("pnpm-lock.yaml", fixture({ lib: value }), "invalid_pnpm_specifier");
+      expect(result.dependencies).toEqual([]);
+    });
+
+  it.each(["../lib", "@scope/lib/extra", "bad name"])("holds invalid peer name %s", name => {
+    const result = expectAttention("pnpm-lock.yaml", fixture({ [name]: "*" }), "invalid_npm_name");
+    expect(result.dependencies).toEqual([]);
+  });
+
+  it("retains bounded peer strings without snapshot lookup, satisfaction or optionality inference", () => {
+    const input = snapshot({ "pnpm-lock.yaml": fixture({ absent: "^9.0.0", "@scope/absent": "*", lib: "^9.0.0",
+      empty: "", tag: "latest", alias: "npm:other@^1", local: "workspace:*", long: "x".repeat(256) },
+    { peerDependenciesMeta: { absent: { optional: true } } }) });
+    const before = structuredClone(input);
+    const result = parseLockfileInventory(input);
+    expect(result.files[0]!.issues).toEqual([]);
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+    expect(result.dependencies).toEqual([{ ecosystem: "npm", package: "lib", version: "1.2.3", scope: "unknown", direct: null,
+      locations: [{ path: "pnpm-lock.yaml", locator: "lib@1.2.3" }] }]);
+    expect(parseLockfileInventory(input)).toEqual(result);
+    expect(input).toEqual(before);
+  });
+
+  it("validates peers before unverified package resolution can skip the row", () => {
+    const result = expectAttention("pnpm-lock.yaml", fixture({ absent: null },
+      { resolution: { tarball: "https://example.com/lib.tgz" } }), "invalid_pnpm_specifier");
+    expect(result.dependencies).toEqual([]);
+  });
+
+  it("discards malformed peer-file positives while retaining an independent lockfile", () => {
+    const result = parseLockfileInventory(snapshot({ "pnpm-lock.yaml": fixture({ lib: null }),
+      "nested/package-lock.json": npm({ "node_modules/lib": npmRow() }) }));
+    expect(result.files.find(file => file.path === "pnpm-lock.yaml")!.issues).toEqual(["invalid_pnpm_specifier"]);
+    expect(result.dependencies).toHaveLength(1);
+    expect(result.dependencies[0]!.locations).toEqual([{ path: "nested/package-lock.json", locator: "node_modules/lib" }]);
+  });
+
+  it.each([10_000, 10_001])("counts peers across all package rows against the per-file budget: %i", count => {
+    const peers = Object.fromEntries(Array.from({ length: 5_000 }, (_, index) => [`peer${index}`, "*"]));
+    const root = JSON.parse(fixture(peers));
+    root.packages["other@1.0.0"] = { resolution: { integrity: "sha512-abc=" },
+      peerDependencies: { ...peers, ...(count > 10_000 ? { extra: "*" } : {}) } };
+    root.snapshots["other@1.0.0"] = {};
+    const result = parseFile("pnpm-lock.yaml", JSON.stringify(root));
+    expect(result.coverage.configuredPathsParsed).toBe(count === 10_000);
+    expect(result.dependencies).toHaveLength(count === 10_000 ? 2 : 0);
+    if (count > 10_000) expect(result.files[0]!.issues).toEqual(["inventory_entry_capacity"]);
+  });
+
+  it.each(["importer", "snapshot"])("shares package peer budget with %s references", owner => {
+    const peers = Object.fromEntries(Array.from({ length: 10_000 }, (_, index) => [`peer${index}`, "*"]));
+    const root = JSON.parse(fixture(peers));
+    if (owner === "importer") root.importers["."].dependencies = { lib: { specifier: "*", version: "1.2.3" } };
+    else root.snapshots["lib@1.2.3"].dependencies = { lib: "1.2.3" };
+    const result = expectAttention("pnpm-lock.yaml", JSON.stringify(root), "inventory_entry_capacity");
+    expect(result.dependencies).toEqual([]);
+  });
+});
+
 describe("pnpm v9 entries", () => {
   it("parses every registry tuple with scopes, aliases and peer suffixes", () => {
     const result = parseFile("pnpm-lock.yaml", pnpm);

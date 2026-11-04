@@ -11,7 +11,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.11", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.12", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -159,6 +159,12 @@ function pnpmKey(key: string): OsvDependency {
   return { ecosystem: "npm", package: npmName(match[1]), version: version(match[2]) };
 }
 
+function pnpmSpecifier(value: unknown): void {
+  if (typeof value !== "string" || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new SourceAttention("invalid_pnpm_specifier");
+  }
+}
+
 function readPnpm(content: string, add: Add, issues: Set<string>): number {
   const document = parseDocument(content, { schema: "core", uniqueKeys: true, customTags: [], strict: true });
   if (document.errors.length || document.warnings.length) throw new SourceAttention("invalid_pnpm_yaml");
@@ -169,10 +175,24 @@ function readPnpm(content: string, add: Add, issues: Set<string>): number {
   const packages = entries(root.packages === undefined ? {} : root.packages, "invalid_pnpm_packages");
   const keys = new Set(packages.map(([key]) => key));
   const tuples = new Set<string>();
+  let referenceCount = 0;
+  const dependencyEntries = (value: unknown) => {
+    const refs = entries(value, "invalid_pnpm_dependency_map");
+    referenceCount += refs.length;
+    if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
+    return refs;
+  };
   for (const [locator, value] of packages) {
     const dep = pnpmKey(locator);
     tuples.add(`${dep.package}@${dep.version}`);
     const row = object(value, "invalid_pnpm_package");
+    if (row.peerDependencies !== undefined) {
+      // Package peers are constraints, not resolved snapshot references or installed-owner edges.
+      for (const [name, specifier] of dependencyEntries(row.peerDependencies)) {
+        npmName(name);
+        pnpmSpecifier(specifier);
+      }
+    }
     const resolution = object(row.resolution, "missing_pnpm_resolution");
     if (resolution.tarball !== undefined || resolution.type !== undefined) {
       // Explicit source overrides may be a fork with unrelated registry identity.
@@ -187,21 +207,17 @@ function readPnpm(content: string, add: Add, issues: Set<string>): number {
   }
   const snapshots = entries(root.snapshots === undefined ? {} : root.snapshots, "invalid_pnpm_snapshots");
   const snapshotKeys = new Set(snapshots.map(([key]) => key));
-  let referenceCount = 0;
   const references = (value: unknown, importer: boolean) => {
     const row = object(value, "invalid_pnpm_dependency_owner");
     for (const kind of ["dependencies", "devDependencies", "optionalDependencies"]) {
       if (row[kind] === undefined) continue;
-      const refs = entries(row[kind], "invalid_pnpm_dependency_map");
-      referenceCount += refs.length;
-      if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
+      const refs = dependencyEntries(row[kind]);
       for (const [name, value] of refs) {
         npmName(name);
         let ref = value;
         if (importer) {
           const declaration = object(value, "invalid_pnpm_importer_dependency");
-          if (typeof declaration.specifier !== "string" || declaration.specifier.length > 256
-            || /[\u0000-\u001f\u007f]/u.test(declaration.specifier)) throw new SourceAttention("invalid_pnpm_specifier");
+          pnpmSpecifier(declaration.specifier);
           ref = declaration.version;
         }
         if (typeof ref !== "string" || ref.length > 1024 || /[\u0000-\u001f\u007f]/u.test(ref)) {
