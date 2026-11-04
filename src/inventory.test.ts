@@ -273,6 +273,46 @@ describe("npm lockfile entries", () => {
     expect(parseNpm({ "": { dependencies: { absent: "^1.0.0" } }, ...packages }).files[0]!.issues).toContain("missing_npm_dependency_entry");
   });
 
+  describe.each([2, 3])("version %i dependency declarations", lockfileVersion => {
+    it.each(["dependencies", "devDependencies", "optionalDependencies"])("holds malformed %s values even when the installed target exists", kind => {
+      for (const value of [null, true, 1, [], {}, "x".repeat(257), "^1.0.0\n", "\u0000", "\u007f"]) {
+        for (const locator of ["", "node_modules/parent", "packages/local"]) {
+          const input = snapshot({ "package-lock.json": npm({
+            [locator]: { ...(locator.startsWith("node_modules/") ? npmRow("parent") : {}), [kind]: { lib: value } },
+            "node_modules/lib": npmRow(),
+          }, lockfileVersion) });
+          const before = structuredClone(input);
+          const result = parseLockfileInventory(input);
+          expect(result.files[0]!.issues).toContain("invalid_npm_dependency_reference");
+          expect(result.coverage.configuredPathsParsed).toBe(false);
+          expect(result.dependencies).toEqual([]);
+          expect(input).toEqual(before);
+          expect(parseLockfileInventory(input)).toEqual(result);
+        }
+      }
+    });
+
+    it.each(["dependencies", "devDependencies", "optionalDependencies"])("retains valid %s strings without declaring range compatibility or ownership", kind => {
+      for (const value of ["", "*", "^1.0.0", "latest", "npm:lib@^1.0.0", "workspace:*", "file:../lib", "git+https://example.com/lib.git", "x".repeat(256)]) {
+        const result = parseNpm({ "": { [kind]: { lib: value } }, "node_modules/lib": npmRow() }, lockfileVersion);
+        expect(result.coverage.configuredPathsParsed).toBe(true);
+        expect(result.dependencies[0]).toMatchObject({ package: "lib", version: "1.2.3", scope: "unknown", direct: null });
+        expect(result.coverage.fullDependencyClosure).toBe("not_proven");
+        expect(result.coverage.runtimeCompleteness).toBe("not_proven");
+      }
+    });
+  });
+
+  it("discards malformed npm reference positives but preserves another file's inventory", () => {
+    const result = parseLockfileInventory(snapshot({
+      "npm-shrinkwrap.json": npm({ "node_modules/lib": { ...npmRow(), dependencies: { lib: false } } }),
+      "other/package-lock.json": npm({ "node_modules/other": npmRow("other") }),
+    }));
+    expect(result.files.find(file => file.path === "npm-shrinkwrap.json")!.issues).toEqual(["invalid_npm_dependency_reference"]);
+    expect(result.dependencies.map(dep => dep.package)).toEqual(["other"]);
+    expect(result.coverage.configuredPathsParsed).toBe(false);
+  });
+
   it.each([1, 4, "3"])("holds unsupported lockfile version %s", v => {
     expectAttention("package-lock.json", JSON.stringify({ lockfileVersion: v, packages: {} }), "unsupported_npm_lockfile_version");
   });

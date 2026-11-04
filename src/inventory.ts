@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.5", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.6", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -120,8 +120,11 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
       const refs = entries(row[kind], "invalid_npm_dependency_map");
       referenceCount += refs.length;
       if (referenceCount > MAX_ENTRIES) throw new SourceAttention("inventory_entry_capacity");
-      for (const [name] of refs) {
+      for (const [name, reference] of refs) {
         npmName(name);
+        if (typeof reference !== "string" || reference.length > 256 || /[\u0000-\u001f\u007f]/u.test(reference)) {
+          throw new SourceAttention("invalid_npm_dependency_reference");
+        }
         let parent = locator;
         let found = false;
         for (;;) {
