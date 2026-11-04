@@ -188,6 +188,84 @@ describe("deterministic report-only rules", () => {
   });
 });
 
+const negativeProofs = [
+  { name: "range exclusion", rule: 1, create: () => {
+    const input = finding();
+    input.versionEvidence.status = "outside";
+    return { input, evidence: input.versionEvidence };
+  } },
+  { name: "RustSec target exclusion", rule: 3, create: () => {
+    const platform = { ...binding(), complete: true, tool: "rustsec",
+      buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"] };
+    return { input: finding({ ecosystem: "crates.io", platform }), evidence: platform };
+  } },
+  { name: "Go symbol absence", rule: 4, create: () => {
+    const go = { ...goScan(), status: "package_only" as const };
+    return { input: finding({ ecosystem: "Go", go }), evidence: go };
+  } },
+  { name: "full-closure function absence", rule: 5, create: () => {
+    const functions = closure();
+    return { input: finding({ functions }), evidence: functions };
+  } },
+];
+
+describe("negative proof tool-version coverage", () => {
+  it.each(negativeProofs)("keeps complete, versioned $name evidence eligible", ({ create, rule }) => {
+    expect(decide(create().input)).toMatchObject({ matchedRule: rule, delivery: "none" });
+  });
+
+  it.each(negativeProofs.flatMap(proof => [undefined, "", " ", "\t\n"].map(version => ({ ...proof, version }))))(
+    "holds $name with missing/blank tool version $version before negative or fix proposals", ({ create, version }) => {
+      const { input, evidence } = create();
+      if (version === undefined) delete input.provenance.toolVersions[evidence.tool];
+      else input.provenance.toolVersions[evidence.tool] = version;
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["toString", "constructor", "__proto__"].flatMap(tool => ["range", "functions"].map(kind => ({ tool, kind }))))(
+    "does not mistake inherited $tool for a recorded $kind tool version", ({ tool, kind }) => {
+      const { input, evidence } = negativeProofs[kind === "range" ? 0 : 3]!.create();
+      evidence.tool = tool;
+      input.provenance.toolVersions = kind === "functions" ? { "osv-range": "fixture-1" } : {};
+      expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+    },
+  );
+
+  it.each(["toString", "constructor", "__proto__"].flatMap(tool => ["range", "functions"].map(kind => ({ tool, kind }))))(
+    "keeps an explicit own $tool version as ordinary $kind provenance", ({ tool, kind }) => {
+      const proof = negativeProofs[kind === "range" ? 0 : 3]!;
+      const { input, evidence } = proof.create();
+      evidence.tool = tool;
+      input.provenance.toolVersions = { [tool]: "fixture-1" };
+      // Function absence still depends on the separately versioned affected-range proof.
+      if (kind === "functions") input.provenance.toolVersions["osv-range"] = "fixture-1";
+      expect(decide(input)).toMatchObject({ matchedRule: proof.rule, delivery: "none" });
+    },
+  );
+
+  it.each(["KEV", "MAL"])("missing range-tool provenance cannot suppress %s P0", kind => {
+    const input = urgent();
+    input.versionEvidence.status = "outside";
+    input.versionEvidence.tool = "toString";
+    input.provenance.toolVersions = {};
+    if (kind === "MAL") {
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+      input.provenance.kev = null;
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+});
+
 describe("finding identities", () => {
   it("uses canonical repo, remediation unit, and the lexical minimum over the complete alias graph", () => {
     const input = finding({ repo: "Example/Service" });

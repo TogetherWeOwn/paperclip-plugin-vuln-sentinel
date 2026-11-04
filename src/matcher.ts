@@ -12,11 +12,13 @@ const validTime = (value: string | null): value is string =>
 
 function bound(input: FindingInput, evidence: BoundEvidence): boolean {
   const advisory = input.aliases.find(item => item.id === input.advisoryId);
+  const toolVersion = input.provenance.toolVersions[evidence.tool];
   return evidence.complete && input.provenance.artifactDigest.length > 0
     && evidence.artifactDigest === input.provenance.artifactDigest
     && evidence.advisoryId === input.advisoryId && validTime(evidence.advisoryModified)
     && evidence.advisoryModified === advisory?.modified
-    && !!input.provenance.toolVersions[evidence.tool];
+    && Object.hasOwn(input.provenance.toolVersions, evidence.tool)
+    && typeof toolVersion === "string" && toolVersion.trim().length > 0;
 }
 
 function proposedRemediation(input: FindingInput): Remediation | null {

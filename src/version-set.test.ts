@@ -48,7 +48,7 @@ describe("same-action all-version aggregation", () => {
     const result = decide(input);
     expect(input.provenance).toEqual(before[0]!.provenance);
     expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
-    expect(result.rulesVersion).toBe("1.0.0+all-versions.1");
+    expect(result.rulesVersion).toBe("1.0.1+all-versions.1");
     expect(decide(structuredClone(input))).toEqual(result);
   });
 
@@ -91,6 +91,24 @@ describe("same-action all-version aggregation", () => {
     expect(decide(group([tuple("1", "unknown", patch), tuple("2", "affected", patch)]))).toMatchObject({
       applicability: "unknown", matchedRule: 8, delivery: "finding", proposedVex: null,
     });
+  });
+
+  it.each(["blank", "inherited"])("holds all outside tuples when range-tool provenance is %s", kind => {
+    const inputs = [tuple("1.0.0", "outside"), tuple("2.0.0", "outside")];
+    for (const input of inputs) {
+      if (kind === "blank") input.provenance.toolVersions["osv-range"] = "\t ";
+      else {
+        input.versionEvidence.tool = "constructor";
+        input.provenance.toolVersions = {};
+      }
+    }
+    const result = decide(group(inputs));
+    expect(result).toMatchObject({ rulesVersion: "1.0.1+all-versions.1", applicability: "unknown",
+      matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
+    expect(result.versionDecisions).toHaveLength(2);
+    for (const decision of result.versionDecisions!) {
+      expect(decision).toMatchObject({ applicability: "unknown", matchedRule: 8 });
+    }
   });
 
   it("keeps dev priority/SLA and compatible fix proposals separate from negative tuples", () => {

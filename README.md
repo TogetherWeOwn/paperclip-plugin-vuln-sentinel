@@ -1145,8 +1145,16 @@ Remediation is proposed only when actionable tuples agree, and VEX only when all
 non-dropped tuples agree on the negative proposal. All-dropped sets have no VEX or
 delivery; a negative observation still never resolves a member.
 
+Rules `1.0.1` require an own, nonblank string in `provenance.toolVersions` for
+bound range, platform, Go and full-closure function evidence. Inherited object
+properties and whitespace-only versions are missing provenance, not proof that
+can drop a finding or propose negative VEX. Explicit own prototype-shaped keys
+remain ordinary provenance strings; no tool version alone authenticates evidence.
+Missing range-tool provenance cannot bypass MAL/KEV P0 through rule 1. Historical
+rule revisions are not rewritten or automatically replayed/promoted by this change.
+
 The journal stores one complete set/decision revision, with a versioned
-`1.0.0+all-versions.1` reducer, input hash and each tuple's decision hash,
+`1.0.1+all-versions.1` reducer, input hash and each tuple's decision hash,
 applicability and rule trace. Tuple enumeration order does not change the action
 or hash. No tuple-level decision head competes with the aggregate via timestamp
 or lexical hash ordering. Current poll/lockfile/OSV/feed references apply to every
