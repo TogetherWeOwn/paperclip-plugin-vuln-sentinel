@@ -158,7 +158,7 @@ second matcher, source transport, authority mirror or runtime entrypoint.
 
 ## Offline npm root declaration context
 
-`observeNpmRootContext(discovery, snapshot, lockfilePath, manifestContent)` binds
+`observeNpmRootContext(discovery, snapshot, lockfilePath, manifestContent, candidate?)` binds
 all supplied lockfile bytes to the retained commit/tree, reparses the inventory and
 validates the exact colocated `package.json`. For one explicit npm v2/v3 lockfile
 or shrinkwrap, it compares that manifest's declarations with the reported
@@ -167,6 +167,28 @@ specifiers, different specifiers, manifest-only and lockfile-only rows. Semantic
 range equivalence and optional/peer/override precedence are not guessed. Duplicate
 JSON keys, malformed declarations, mismatched tree/blob/size or source bindings,
 lossy UTF-8 and unsupported selected formats fail closed.
+
+Version `1.1.0` optionally compares one canonical stable npm candidate against each
+exact-name declaration on **both** sides, sharing the manifest observer's bounded
+range evaluator. `manifestCandidateRangeMatch` and `lockfileCandidateRangeMatch`
+retain `matches`, `does_not_match` or `unknown` independently. Unsupported syntax
+is unknown, not exclusion; a missing side, unrelated package or omitted candidate
+has a null comparison. The corresponding specifier fields and retained
+`manifest.candidate` distinguish those cases. Literal differences remain differences
+even if both ranges accept the candidate, and cross-section conflicts are not
+collapsed into optional/peer/override precedence. Unsupported root specifiers,
+missing declarations and candidate mismatches add explicit attention. Other
+ecosystems and prerelease/build/noncanonical candidates are rejected before
+comparison, even if the manifest has no declaration for the package.
+
+Candidate comparison is declared-range membership only. It neither selects a
+version nor resolves the candidate against installed tuples. Matching both sides,
+even alongside an OSV-reported fixing boundary, cannot prove release availability,
+complete owner/workspace/transitive constraints or an all-version compatible fix.
+All original inventory versions and locations remain unchanged; no candidate is
+substituted into inventory or normalized policy inputs. The observer version and
+candidate/result data participate in the content hash; old observations are not
+rewritten or upgraded into authority.
 
 The result includes every same-name npm inventory tuple and location **in the
 selected lockfile**, not just one installed version. `rootLocatorReported` only
@@ -190,7 +212,8 @@ port. No schema, writer or authority mapping is changed.
 Existing input bounds apply; the observer also fails rather than truncating above
 10,000 combined declaration rows or 1 MiB expanded output. Offline tests cover
 multiple versions/locations, alias and workspace holds, section conflicts, partial
-inventory, exact byte/source binding, malformed/duplicate records, capacity and
+inventory, exact byte/source binding, malformed/duplicate records, capacity,
+per-side candidate membership/unknown/null, OSV-boundary non-promotion and
 replay/input immutability. They are not enabled scans or pilot acceptance;
 publication remains NOT ADMISSIBLE/off.
 

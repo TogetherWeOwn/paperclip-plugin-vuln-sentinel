@@ -57,6 +57,16 @@ function supportedRange(specifier: string): boolean {
   try { new Range(specifier); return true; } catch { return false; }
 }
 
+/** Shared declaration syntax only; callers validate the candidate and declaration before comparing. */
+export function npmDeclarationRange(specifier: string, candidateVersion?: string): Pick<
+  NpmManifestObservation["declarations"][number], "specifierKind" | "candidateRangeMatch"
+> {
+  const supported = supportedRange(specifier);
+  return { specifierKind: supported ? "stable_semver_subset" : "unsupported",
+    candidateRangeMatch: candidateVersion === undefined ? null : !supported ? "unknown"
+      : satisfies(candidateVersion, specifier) ? "matches" : "does_not_match" };
+}
+
 /** Offline declaration/range observations. Never binds installed tuples, scope or a rule-6 fix. */
 export function observeNpmManifest(
   discovery: RepositoryDiscovery, path: string, content: string, candidate?: OsvDependency,
@@ -109,13 +119,9 @@ export function observeNpmManifest(
       if (!name(pkg) || typeof value !== "string" || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
         throw new SourceAttention("invalid_npm_manifest_declaration");
       }
-      const supported = supportedRange(value);
-      if (!supported) attention.add("unsupported_npm_manifest_specifier");
-      declarations.push({ section, package: pkg, specifier: value,
-        specifierKind: supported ? "stable_semver_subset" : "unsupported",
-        candidateRangeMatch: !candidate || candidate.package !== pkg ? null : !supported ? "unknown"
-          : satisfies(candidate.version, value) ? "matches" : "does_not_match",
-      });
+      const range = npmDeclarationRange(value, candidate?.package === pkg ? candidate.version : undefined);
+      if (range.specifierKind === "unsupported") attention.add("unsupported_npm_manifest_specifier");
+      declarations.push({ section, package: pkg, specifier: value, ...range });
     }
   }
   if (candidate && !declarations.some(row => row.package === candidate.package)) attention.add("candidate_not_declared_in_manifest");

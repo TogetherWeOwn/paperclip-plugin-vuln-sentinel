@@ -3,10 +3,11 @@ import { discoveryCoverage, validateRepositoryDiscovery, type RepositoryDiscover
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { parseLockfileInventory, type InventoryDependency } from "./inventory.js";
-import { observeNpmManifest, type NpmManifestObservation } from "./npm-manifest.js";
+import { npmDeclarationRange, observeNpmManifest, type NpmManifestObservation } from "./npm-manifest.js";
+import type { OsvDependency } from "./osv.js";
 import { object, SourceAttention } from "./source-http.js";
 
-export const NPM_ROOT_CONTEXT_VERSION = "1.0.0";
+export const NPM_ROOT_CONTEXT_VERSION = "1.1.0";
 const SECTIONS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
 const NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 
@@ -24,6 +25,9 @@ export interface NpmRootContextObservation {
   declarations: Array<{
     section: Section; package: string; manifestSpecifier: string | null; lockfileSpecifier: string | null;
     comparison: "same_specifier" | "different_specifier" | "manifest_only" | "lockfile_only";
+    // Null means missing side, no candidate, or another package; unknown means unsupported syntax.
+    manifestCandidateRangeMatch: NpmManifestObservation["declarations"][number]["candidateRangeMatch"];
+    lockfileCandidateRangeMatch: NpmManifestObservation["declarations"][number]["candidateRangeMatch"];
   }>;
   // Same-name candidates only. Neither a locator nor a declaration comparison proves an owner edge.
   inventoryCandidates: Array<Pick<InventoryDependency, "ecosystem" | "package" | "version" | "locations"> & {
@@ -55,6 +59,7 @@ function rootDeclarations(root: Record<string, unknown>): Array<{ section: Secti
 /** Exact retained bytes, root declaration comparisons and name-only candidates; not package resolution. */
 export function observeNpmRootContext(
   discovery: RepositoryDiscovery, snapshot: RepositoryLockfiles, lockfilePath: string, manifestContent: string,
+  candidate?: OsvDependency,
 ): NpmRootContextObservation {
   const tree = validateRepositoryDiscovery(discovery);
   if (tree.repo !== snapshot.repo || tree.sourceSha !== snapshot.sourceSha || tree.defaultBranch !== snapshot.defaultBranch) {
@@ -74,7 +79,7 @@ export function observeNpmRootContext(
   const fileInventory = inventory.files.find(row => row.path === lockfilePath);
   if (!file || fileInventory?.format !== "npm") throw new SourceAttention("unsupported_npm_root_lockfile");
   const directory = lockfilePath.slice(0, lockfilePath.lastIndexOf("/") + 1);
-  const manifest = observeNpmManifest(tree, `${directory}package.json`, manifestContent);
+  const manifest = observeNpmManifest(tree, `${directory}package.json`, manifestContent, candidate);
   let root: Record<string, unknown>;
   try {
     root = object(JSON.parse(file.content), "invalid_npm_root_lockfile");
@@ -99,20 +104,32 @@ export function observeNpmRootContext(
   if ([...coverage.supportedLockfiles, ...coverage.unsupportedLockfiles].some(path => path !== lockfilePath
     && path.slice(0, path.lastIndexOf("/") + 1) === directory)) attention.add("multiple_colocated_lockfiles_not_selected");
   if (Object.hasOwn(owner, "workspaces")) attention.add("npm_root_workspaces_not_evaluated");
+  if (manifest.candidate && !locked.some(row => row.package === manifest.candidate!.package)) {
+    attention.add("candidate_not_declared_in_npm_root");
+  }
   // Preserve each section independently; do not apply optional/peer/override precedence.
   const declarations: NpmRootContextObservation["declarations"] = [];
   for (const section of SECTIONS) {
-    const declared = new Map(manifest.declarations.filter(row => row.section === section).map(row => [row.package, row.specifier]));
+    const declared = new Map(manifest.declarations.filter(row => row.section === section).map(row => [row.package, row]));
     const reported = new Map(locked.filter(row => row.section === section).map(row => [row.package, row.specifier]));
     for (const pkg of [...new Set([...declared.keys(), ...reported.keys()])].sort()) {
-      const manifestSpecifier = declared.get(pkg) ?? null;
+      const declaration = declared.get(pkg);
+      const manifestSpecifier = declaration?.specifier ?? null;
       const lockfileSpecifier = reported.get(pkg) ?? null;
+      const lockedRange = lockfileSpecifier === null ? null : npmDeclarationRange(lockfileSpecifier,
+        manifest.candidate?.package === pkg ? manifest.candidate.version : undefined);
+      if (lockedRange?.specifierKind === "unsupported") attention.add("unsupported_npm_root_specifier");
       declarations.push({ section, package: pkg, manifestSpecifier, lockfileSpecifier,
         comparison: manifestSpecifier === null ? "lockfile_only" : lockfileSpecifier === null ? "manifest_only"
-          : manifestSpecifier === lockfileSpecifier ? "same_specifier" : "different_specifier" });
+          : manifestSpecifier === lockfileSpecifier ? "same_specifier" : "different_specifier",
+        manifestCandidateRangeMatch: declaration?.candidateRangeMatch ?? null,
+        lockfileCandidateRangeMatch: lockedRange?.candidateRangeMatch ?? null });
     }
   }
   if (declarations.length > 10_000) throw new SourceAttention("npm_root_declaration_capacity");
+  if (declarations.some(row => row.manifestCandidateRangeMatch === "does_not_match" || row.lockfileCandidateRangeMatch === "does_not_match")) {
+    attention.add("npm_root_candidate_declaration_mismatch");
+  }
   if (!declarations.length) attention.add("empty_root_declarations_not_absence");
   if (declarations.some(row => row.comparison !== "same_specifier")) attention.add("npm_root_declarations_disagree");
   const names = new Set(declarations.map(row => row.package));

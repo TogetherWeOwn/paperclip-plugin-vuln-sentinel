@@ -4,6 +4,8 @@ import type { RepositoryDiscovery, RepositoryTreeEntry } from "./github-discover
 import type { RepositoryLockfiles } from "./github-lockfiles.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { NPM_ROOT_CONTEXT_VERSION, observeNpmRootContext } from "./npm-root-context.js";
+import { observeOsvFixes } from "./osv-fixes.js";
+import { osvFindingInputs, parseOsvRecord, type OsvDependency } from "./osv.js";
 
 const declarations = { dependencies: { example: "^1.0.0" } };
 function installed(version = "1.2.3", name = "example") {
@@ -47,7 +49,10 @@ function treeFor(source: RepositoryLockfiles, extra: Array<{ path: string; conte
   rehash(tree);
   return tree;
 }
-function observe(f = fixture()) { return observeNpmRootContext(f.tree, f.source, f.path, f.manifestContent); }
+function observe(f = fixture(), candidate?: OsvDependency) {
+  return observeNpmRootContext(f.tree, f.source, f.path, f.manifestContent, candidate);
+}
+const candidate: OsvDependency = { ecosystem: "npm", package: "example", version: "1.2.3" };
 function rawLockfile(content: string) {
   const f = fixture();
   f.source = snapshot([{ path: f.path, content }]);
@@ -64,7 +69,7 @@ describe("offline npm root declaration context", () => {
         discoverySha256: f.tree.sha256, artifactDigest: f.source.artifactDigest, lockfilePath: f.path,
         lockfileBlobSha: f.source.files[0]!.blobSha, lockfileSha256: f.source.files[0]!.sha256 } });
     expect(result.declarations).toEqual([{ section: "dependencies", package: "example", manifestSpecifier: "^1.0.0",
-      lockfileSpecifier: "^1.0.0", comparison: "same_specifier" }]);
+      lockfileSpecifier: "^1.0.0", comparison: "same_specifier", manifestCandidateRangeMatch: null, lockfileCandidateRangeMatch: null }]);
     expect(result.inventoryCandidates).toEqual([
       { ecosystem: "npm", package: "example", version: "1.2.3", rootLocatorReported: true,
         locations: [{ path: f.path, locator: "node_modules/example" }] },
@@ -73,6 +78,128 @@ describe("offline npm root declaration context", () => {
     ]);
     const { observationSha256, ...body } = result;
     expect(observationSha256).toBe(sha256(canonicalJson(["npm-root-context-observation-v1", body])));
+  });
+
+  it.each([
+    ["1.2.3", "1.2.3", "matches"], ["1.2.3", "1.2.4", "does_not_match"],
+    ["^1.2.3", "1.9.0", "matches"], ["^1.2.3", "2.0.0", "does_not_match"],
+    ["^0.2.3", "0.3.0", "does_not_match"], ["^0.0.3", "0.0.4", "does_not_match"],
+    ["~1.2.3", "1.2.9", "matches"], ["~1.2.3", "1.3.0", "does_not_match"],
+    [">=1.0.0 <2.0.0", "1.5.0", "matches"], [">=1.0.0 <2.0.0", "2.0.0", "does_not_match"],
+    ["=1.2.3 || ^2.0.0", "2.4.0", "matches"], ["=1.2.3 || ^2.0.0", "1.2.4", "does_not_match"],
+    [">1.2.3 <=1.2.4", "1.2.4", "matches"], [">=2.0.0 <1.0.0", "1.2.3", "does_not_match"],
+  ])("compares a candidate against both supported declarations %s at %s as %s", (specifier, version, expected) => {
+    const f = fixture({ dependencies: { example: specifier } });
+    const result = observe(f, { ...candidate, version: version! });
+    expect(result.declarations[0]).toMatchObject({ manifestCandidateRangeMatch: expected, lockfileCandidateRangeMatch: expected });
+    expect(result.manifest.candidate).toEqual({ ...candidate, version });
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+    expect(result.inventoryCandidates).toEqual(observe(f).inventoryCandidates);
+    expect(result.toolVersions["vuln-sentinel-npm-root-context"]).toBe("1.1.0");
+  });
+
+  it.each(["*", "", "latest", "next", "1", "1.2", "1.x", "1.2.x", "v1.2.3", "01.2.3", ">= 1.2.3",
+    "1.2.3 - 2.0.0", "1.2.3-beta.1", "1.2.3+build", "npm:other@^1.0.0", "workspace:^", "file:../local", "link:../local",
+    "git+https://example.test/pkg.git", "https://example.test/pkg.tgz", "github:org/repo", "^1.2.3 ||", "|| 1.2.3",
+    "^9007199254740991.0.0", Array(9).fill("^1.2.3").join(" || "), Array(9).fill(">=1.2.3").join(" ")])(
+    "retains unsupported lockfile specifier %s as unknown, not exclusion", specifier => {
+      const result = observe(fixture({ dependencies: { example: specifier } }, declarations), candidate);
+      expect(result.declarations[0]).toMatchObject({ manifestCandidateRangeMatch: "matches", lockfileCandidateRangeMatch: "unknown" });
+      expect(result.attention).toContain("unsupported_npm_root_specifier");
+      expect(result.compatibleFixVerified).toBe(false);
+    });
+
+  it("keeps semantic agreement distinct from literal equality, and preserves cross-section conflicts", () => {
+    const result = observe(fixture({ dependencies: { example: ">=1.0.0 <2.0.0" }, devDependencies: { example: "^2.0.0" },
+      optionalDependencies: { example: "workspace:*" }, peerDependencies: { example: "^1.0.0" } },
+    { dependencies: { example: "^1.0.0" }, devDependencies: { example: "^1.0.0" },
+      optionalDependencies: { example: "^2.0.0" }, peerDependencies: { example: "*" } }), candidate);
+    expect(result.declarations.map(row => [row.section, row.comparison, row.manifestCandidateRangeMatch, row.lockfileCandidateRangeMatch]))
+      .toEqual([["dependencies", "different_specifier", "matches", "matches"], ["devDependencies", "different_specifier", "matches", "does_not_match"],
+        ["optionalDependencies", "different_specifier", "does_not_match", "unknown"], ["peerDependencies", "different_specifier", "unknown", "matches"]]);
+    expect(result.attention).toEqual(expect.arrayContaining(["npm_root_candidate_declaration_mismatch", "unsupported_npm_root_specifier",
+      "unsupported_npm_manifest_specifier", "npm_root_declarations_disagree"]));
+    expect(result.compatibleFixVerified).toBe(false);
+  });
+
+  it.each(["manifest_only", "lockfile_only", "neither", "other_package"])(
+    "never invents a range comparison for missing or unqueried sides: %s", condition => {
+      const manifest = condition === "lockfile_only" || condition === "neither" ? {} : declarations;
+      const owner = condition === "manifest_only" || condition === "neither" ? {} : declarations;
+      const result = observe(fixture(owner, manifest), condition === "other_package" ? { ...candidate, package: "other" } : candidate);
+      expect(result.declarations.every(row => row.manifestCandidateRangeMatch === (condition === "manifest_only" ? "matches" : null))).toBe(true);
+      expect(result.declarations.every(row => row.lockfileCandidateRangeMatch === (condition === "lockfile_only" ? "matches" : null))).toBe(true);
+      if (condition !== "lockfile_only") expect(result.attention).toContain("candidate_not_declared_in_npm_root");
+      if (condition !== "manifest_only") expect(result.attention).toContain("candidate_not_declared_in_manifest");
+      expect(result.compatibleFixVerified).toBe(false);
+    });
+
+  it("leaves both comparison sides null without a candidate, including unsupported declarations", () => {
+    const result = observe(fixture({ dependencies: { example: "workspace:*" } }));
+    expect(result.manifest.candidate).toBeNull();
+    expect(result.declarations[0]).toMatchObject({ manifestCandidateRangeMatch: null, lockfileCandidateRangeMatch: null });
+    expect(result.attention).toContain("unsupported_npm_root_specifier");
+  });
+
+  it("does not equate an unsupported empty specifier with a missing side", () => {
+    const result = observe(fixture({ dependencies: { example: "" } }, {}), candidate);
+    expect(result.declarations[0]).toMatchObject({ manifestSpecifier: null, lockfileSpecifier: "", comparison: "lockfile_only",
+      manifestCandidateRangeMatch: null, lockfileCandidateRangeMatch: "unknown" });
+  });
+
+  it("compares scoped names exactly without querying a same-version unrelated package", () => {
+    const result = observe(fixture({ dependencies: { "@scope/example": "^1.0.0", example: "^2.0.0" } }),
+      { ...candidate, package: "@scope/example" });
+    expect(result.declarations.map(row => [row.package, row.manifestCandidateRangeMatch, row.lockfileCandidateRangeMatch]))
+      .toEqual([["@scope/example", "matches", "matches"], ["example", null, null]]);
+  });
+
+  it.each(["1.2", "v1.2.3", "01.2.3", "1.2.3-beta.1", "1.2.3+build", " 1.2.3", "1.2.3 "])(
+    "rejects unsupported candidate %s even when the manifest has no declarations", version => {
+      expect(() => observe(fixture(declarations, {}), { ...candidate, version })).toThrow("unsupported_npm_manifest_candidate");
+    });
+
+  it("rejects another ecosystem and malformed candidate package before comparing locked declarations", () => {
+    expect(() => observe(fixture(declarations, {}), { ...candidate, ecosystem: "crates.io" })).toThrow("unsupported_npm_manifest_candidate");
+    expect(() => observe(fixture(declarations, {}), { ...candidate, package: "../example" })).toThrow("unsupported_npm_manifest_candidate");
+  });
+
+  it("never promotes matching manifest/root declarations plus an OSV boundary to a compatible fix", () => {
+    const dependency = { ...candidate, version: "1.0.0" };
+    const queriedAt = "2026-11-04T00:00:00.000Z";
+    const body = { queriedAt, unavailableIds: [], observations: [{ dependency, advisoryIds: ["GHSA-a"] }],
+      records: [parseOsvRecord({ id: "GHSA-a", modified: queriedAt, affected: [{
+        package: { ecosystem: "npm", name: "example" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "1.2.3" }] }],
+      }] }, "GHSA-a")] };
+    const scan = { ...body, snapshotSha256: sha256(canonicalJson(body)) };
+    const f = fixture();
+    const context = { repo: f.source.repo, artifactDigest: f.source.artifactDigest, observedAt: queriedAt };
+    const before = osvFindingInputs(scan, context);
+    const boundary = observeOsvFixes(scan, dependency).groups[0]!.candidates[0]!;
+    expect(boundary.status).toBe("outside_reported_ranges");
+    const result = observe(f, { ...dependency, version: boundary.version });
+    expect(result.declarations[0]).toMatchObject({ manifestCandidateRangeMatch: "matches", lockfileCandidateRangeMatch: "matches" });
+    expect(result.inventoryCandidates).toHaveLength(2);
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+    expect(result.attention).toEqual(expect.arrayContaining(["npm_transitive_and_workspace_constraints_not_verified", "release_availability_not_verified"]));
+    expect(osvFindingInputs(scan, context)).toEqual(before);
+    expect(before[0]).toMatchObject({ fixedVersion: null, compatibleFixVerified: false });
+  });
+
+  it("replays candidate comparisons without mutating inputs or borrowing later candidate results", async () => {
+    const f = fixture(); const before = structuredClone({ f, candidate });
+    const results = await Promise.all(Array.from({ length: 4 }, async () => observe(f, candidate)));
+    expect(results.every(result => canonicalJson(result) === canonicalJson(results[0]))).toBe(true);
+    expect({ f, candidate }).toEqual(before);
+    const other = observe(f, { ...candidate, version: "2.0.0" });
+    expect(other.observationSha256).not.toBe(results[0]!.observationSha256);
+    expect(other.declarations[0]!.lockfileCandidateRangeMatch).toBe("does_not_match");
+    expect(other.inventoryCandidates).toEqual(results[0]!.inventoryCandidates);
+    expect(observe(f).observationSha256).not.toBe(results[0]!.observationSha256);
+    results[0]!.manifest.candidate!.version = "9.0.0";
+    results[0]!.declarations[0]!.lockfileCandidateRangeMatch = "unknown";
+    expect(observe(f, candidate)).toEqual(results[1]);
+    expect(candidate.version).toBe("1.2.3");
   });
 
   it("preserves conflicting sections, both missing sides and literal specifier differences", () => {
