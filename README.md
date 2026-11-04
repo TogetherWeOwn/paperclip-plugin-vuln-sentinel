@@ -20,13 +20,16 @@ Implemented:
   ecosystems return `unknown`, never proof that a package is outside a range.
 - Durable two-level finding/container routing, UTC weekly buckets, sticky membership,
   P0 promotion requests, alias redirects and evidenced replacement lineage.
+- Explicit report-only container rendering/publication through the same guard,
+  with monotonic revision/content checks, original-batch P0 promotion, and external
+  closure-mismatch reopening. Tests use only fake native issues.
 
 Still required before installation/pilot acceptance: source ingestion and runtime
 validation, GitHub default-SHA/ETag caching, OSV querybatch and Dependabot switching,
-KEV/EPSS refresh, container rendering/publication/reopen orchestration, verified
-new-artifact resolution, manifest/jobs, managed triage project, health/counters,
-operator runbook and installation, and two real consecutive report-only scans.
-Routing persists publication intent only; it does not emit weekly native issues.
+KEV/EPSS refresh, verified new-artifact resolution, manifest/jobs and weekly job
+scheduling, managed triage project, health/counters, operator runbook and installation,
+and two real consecutive report-only scans. No worker is wired to the explicit
+publication API; no weekly batch or per-finding issue has been emitted on a live host.
 
 ## Development
 
@@ -120,16 +123,49 @@ A crash or lost response is repaired by replay; the reducer performs no host eff
 - Negative applicability remains a proposal. There is deliberately no API that
   treats container closure, elapsed time, changed fix hints, or arbitrary new
   artifact observations as proof of remediation. Verified new-artifact rescan
-  resolution and external-closure mismatch/reopen handling are still unimplemented.
+  resolution is still unimplemented; external-closure reconciliation only reopens
+  the same container and never changes member state.
 
 This is a bounded pilot projection: at most 2,000 members and 1 MiB per repository,
 with at most 32 CAS attempts per invocation. Capacity/contention failures retain
 journal evidence, throw an attention-required error and permit no issue effect.
 Runtime health must surface those errors before installation. It is not a general
 unbounded organization ledger; scaling requires a measured storage migration.
-Native issue links and creation guards remain separate from this routing projection;
-publication still needs a shared origin-kind-aware, monotonic container-revision
-protocol before the two APIs can safely be wired together.
+Native issue links and creation guards are separate from this routing projection;
+`ContainerPublication` connects them through the shared origin-kind-aware guard.
+
+## Explicit container publication
+
+`ContainerPublication.publish(companyId, canonicalRepo, originId, projectId, weeklyDue?)`
+loads the original durable container and all of its journaled member decisions.
+It validates the mapping and artifact-bound input hashes before any host effect.
+The body includes independent member priorities, deadlines, aliases, evidence,
+proposed commands/VEX and predecessor/successor links. Missing/malformed evidence
+or a body exceeding 128 KiB fails closed; it is never silently truncated.
+
+- Until the existing host job passes `weeklyDue = true`, an unpublished non-urgent
+  weekly container is deferred without acquiring a creation claim. Initial P0 and
+  a weekly-to-P0 promotion bypass that delay. There is no new scheduler here.
+- An already-claimed container is always handled under its original origin kind
+  and ID. A later P0 updates/reopens the original weekly issue, never a dedicated
+  urgent copy. A pending/indeterminate claim remains fenced even during escalation.
+- Successful publication records both the container revision and a content hash.
+  Older revisions cannot overwrite or reopen newer publications. Identical replay
+  performs no update. Conflicting content at the same revision requires attention,
+  rather than allowing a different writer or renderer to overwrite it silently.
+- A closed container with actionable unresolved members is a closure mismatch, not
+  a fix. The versioned publication API reopens that same issue, without changing
+  any member state. Once open, same-revision replay is a no-op. Repeated external
+  closure is a new mismatch; it is not permission to mark members remediated.
+- A timed-out refresh is not safe to retry merely because its linked issue is
+  visible. Reconciliation requires independent terminal-execution **and** settled
+  host-effect receipts before releasing a known in-flight update. Without them,
+  even a higher-priority/newer container revision remains delivery-unknown.
+
+This is a tested library effect boundary, not an enabled plugin or batching/pilot
+acceptance. No scan, live publication, installation or configuration has run.
+Complete new-digest rescan resolution, preservation of unrelated resolved members,
+job integration and real two-run zero-duplicate evidence remain required.
 
 ## Creation safety and reconciliation
 
@@ -150,8 +186,9 @@ Every conforming writer must go through the same helper:
 4. Link the returned issue ID through a conditional token/state update. Any
    uncertain create/link outcome remains fenced. Linked issues are reused, never
    replaced automatically if they disappear.
-5. Only a newer known advisory modification refreshes/reopens the linked issue.
-   Same/old/unknown revision replays do not reopen it again.
+5. The legacy per-finding API refreshes/reopens only for a newer known advisory
+   modification. Versioned container publication instead uses monotonic container
+   revisions, plus explicit unresolved-member closure reconciliation as above.
 
 A four-minute internal deadline bounds an invocation. **Timeout is not
 cancellation:** a submitted host request can still commit later. Thirty minutes

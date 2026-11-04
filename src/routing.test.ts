@@ -180,6 +180,23 @@ describe("durable routing before any issue effect", () => {
     expect((await routing.snapshot(company, repo)).members[0]!.currentOriginId).toBe(nextId);
   });
 
+  it("an older new alias redirect advances publication revision without rolling back the current decision", async () => {
+    const original = at(weekly(), "2026-11-06T00:00:00Z");
+    const first = await routing.observe(company, original);
+    const before = (await routing.snapshot(company, repo)).members[0]!;
+    const older = at(weekly(), "2026-11-05T00:00:00Z");
+    older.aliases[0]!.aliases.push("AAA-new-minimum");
+    const learned = await routing.observe(company, older);
+    expect(learned.container!.originId).toBe(first.container!.originId);
+    expect(learned.container!.revision).toBe(first.container!.revision + 1);
+    const retained = (await routing.snapshot(company, repo)).members[0]!;
+    expect(retained.currentOriginId).toBe(before.currentOriginId);
+    expect(retained.decisionId).toBe(before.decisionId);
+    expect(retained.aliases).toContain("AAA-new-minimum");
+    const replay = await routing.observe(company, older);
+    expect(replay.container!.revision).toBe(learned.container!.revision);
+  });
+
   it("an alias bridge between existing independent records requires attention, not silent merge", async () => {
     const a = weekly();
     const b = weekly({ advisoryId: "GHSA-independent", aliases: [{ id: "GHSA-independent", aliases: [], upstream: [], modified: "2026-11-01T00:00:00Z", withdrawn: null }] });

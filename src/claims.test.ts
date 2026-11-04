@@ -5,54 +5,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { CardDelivery, ClaimStore, DATABASE_NAMESPACE, FINDING_ORIGIN_KIND } from "./claims.js";
 import type { DeliveryInput, IssuePort } from "./claims.js";
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
-}
+import { deferred, FakeIssues, summary } from "./test/issues.js";
+import type { Summary } from "./test/issues.js";
 
-type Summary = Awaited<ReturnType<IssuePort["create"]>>;
 const input = (patch: Partial<DeliveryInput> = {}): DeliveryInput => ({
   companyId: "company-a", projectId: "triage", originId: "a".repeat(64),
   title: "Report-only finding", description: "Evidence bundle", priority: "high",
   advisoryModified: "2026-11-01T00:00:00Z", ...patch,
 });
-const summary = (id: string, patch: Partial<Summary> = {}): Summary => ({
-  id, companyId: "company-a", originId: "a".repeat(64), originKind: FINDING_ORIGIN_KIND, status: "todo", ...patch,
-});
-
-class FakeIssues implements IssuePort {
-  rows = new Map<string, Summary>();
-  creates: Parameters<IssuePort["create"]>[0][] = [];
-  updates: Parameters<IssuePort["update"]>[] = [];
-  lookups: Parameters<IssuePort["list"]>[0][] = [];
-  onCreate: (() => Promise<Summary>) | null = null;
-  onUpdate: (() => Promise<void>) | null = null;
-
-  async list(query: Parameters<IssuePort["list"]>[0]): Promise<Summary[]> {
-    this.lookups.push(query);
-    return structuredClone([...this.rows.values()].filter(row => row.companyId === query.companyId
-      && row.originKind === query.originKind && row.originId === query.originId).slice(0, query.limit));
-  }
-  async create(payload: Parameters<IssuePort["create"]>[0]): Promise<Summary> {
-    this.creates.push(payload);
-    if (this.onCreate) return this.onCreate();
-    const issue = summary(`issue-${this.creates.length}`, {
-      companyId: payload.companyId, originId: payload.originId!, originKind: payload.originKind!,
-    });
-    this.rows.set(issue.id, issue);
-    return structuredClone(issue);
-  }
-  async update(...args: Parameters<IssuePort["update"]>): Promise<Summary> {
-    this.updates.push(args);
-    if (this.onUpdate) await this.onUpdate();
-    const [id, patch] = args;
-    const issue = this.rows.get(id)!;
-    if (patch.status) issue.status = patch.status;
-    return structuredClone(issue);
-  }
-}
-
 let postgres: PGlite;
 let db: PluginDatabaseClient;
 let store: ClaimStore;
@@ -302,6 +262,73 @@ describe("atomic namespace SQL and report-only delivery", () => {
     expect((await store.read(input()))!.state).toBe("indeterminate");
     expect(issues.updates).toHaveLength(1);
     expect(issues.creates).toHaveLength(1);
+  });
+
+  it("monotonic container revisions reject stale updates and conflicting same-revision content", async () => {
+    const current = input({ publicationRevision: 3, description: "revision 3" });
+    await delivery.ensure(current);
+    expect((await delivery.ensure(current)).status).toBe("reused");
+    expect((await delivery.ensure(input({ publicationRevision: 2 }))).status).toBe("reused");
+    expect((await delivery.ensure({ ...current, description: "conflicting" })).status).toBe("delivery_unknown");
+    expect((await delivery.ensure(input())).status).toBe("delivery_unknown");
+    expect(issues.updates).toHaveLength(0);
+    expect((await delivery.ensure({ ...current, publicationRevision: 4, description: "revision 4" })).status).toBe("updated");
+    expect((await store.read(input()))!.published_revision).toBe(4);
+    expect(issues.bodies.get("issue-1")).toBe("revision 4");
+  });
+
+  it("reconciliation cannot release an in-flight update just because its issue is visible", async () => {
+    await delivery.ensure(input({ publicationRevision: 1 }));
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    issues.onUpdate = async () => { started.resolve(); await finish.promise; };
+    const changed = input({ publicationRevision: 2, description: "revision 2" });
+    const first = new CardDelivery(store, issues, 150).ensure(changed);
+    await started.promise;
+    expect((await first).status).toBe("delivery_unknown");
+    await ageClaim();
+    const latest = input({ publicationRevision: 3, description: "revision 3" });
+    expect((await delivery.reconcile(latest)).status).toBe("delivery_unknown");
+    expect((await delivery.ensure(latest)).status).toBe("delivery_unknown");
+    expect(issues.updates).toHaveLength(1);
+    finish.resolve();
+    await Promise.resolve();
+    const token = (await store.read(input()))!.claim_token;
+    issues.onUpdate = null;
+    expect((await delivery.reconcile(latest, async () => ({
+      previousClaimToken: token, terminalExecutionReceipt: "execution-ended",
+      settledHostEffectsReceipt: "update-settled", auditRef: "verified-audit",
+    }))).status).toBe("updated");
+    expect(issues.bodies.get("issue-1")).toBe("revision 3");
+    expect((await store.read(input()))!.published_revision).toBe(3);
+    expect(issues.creates).toHaveLength(1);
+  });
+
+  it("a refresh in flight fences concurrent newer publication until the prior effect completes", async () => {
+    await delivery.ensure(input({ publicationRevision: 1 }));
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    issues.onUpdate = async () => { started.resolve(); await finish.promise; };
+    const first = delivery.ensure(input({ publicationRevision: 2, description: "revision 2" }));
+    await started.promise;
+    expect((await delivery.ensure(input({ publicationRevision: 3 }))).status).toBe("pending");
+    expect((await delivery.reconcile(input({ publicationRevision: 3 }))).status).toBe("delivery_unknown");
+    expect(issues.updates).toHaveLength(1);
+    finish.resolve();
+    expect((await first).status).toBe("updated");
+    issues.onUpdate = null;
+    await delivery.ensure(input({ publicationRevision: 3, description: "revision 3" }));
+    await delivery.ensure(input({ publicationRevision: 2, description: "revision 2" }));
+    expect(issues.bodies.get("issue-1")).toBe("revision 3");
+  });
+
+  it("origin kind mismatches cannot reuse, retag, or release a different claim", async () => {
+    await delivery.ensure(input());
+    const weekly = input({ originKind: "plugin:togetherweown.vuln-sentinel:weekly:v1", publicationRevision: 1 });
+    expect((await delivery.ensure(weekly)).status).toBe("delivery_unknown");
+    expect((await delivery.reconcile(weekly)).status).toBe("delivery_unknown");
+    expect(issues.creates).toHaveLength(1);
+    expect(issues.updates).toHaveLength(0);
   });
 
   it("token-fenced SQL refuses a late old-owner link", async () => {

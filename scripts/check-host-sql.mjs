@@ -54,6 +54,7 @@ await store.acquire(key, "fixture-token");
 await store.read(key);
 await store.change(key, "fixture-token", "reserved", {
   state: "linked", issue_id: "fixture-issue", advisory_modified: null, recovery_audit: [],
+  published_revision: 1, published_sha256: "b".repeat(64),
 });
 const journal = new DecisionJournal(db);
 const { decision, decisionId } = await journal.record("fixture-company", finding());

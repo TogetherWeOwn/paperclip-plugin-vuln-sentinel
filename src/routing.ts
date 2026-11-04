@@ -1,10 +1,10 @@
 import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
-import { DATABASE_NAMESPACE, FINDING_ORIGIN_KIND } from "./claims.js";
+import { DATABASE_NAMESPACE, FINDING_ORIGIN_KIND, WEEKLY_ORIGIN_KIND } from "./claims.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { DecisionJournal } from "./journal.js";
 import type { Decision, FindingInput, Priority } from "./model.js";
 
-export const WEEKLY_ORIGIN_KIND = "plugin:togetherweown.vuln-sentinel:weekly:v1" as const;
+export { WEEKLY_ORIGIN_KIND } from "./claims.js";
 const DAY = 86400000;
 
 export interface RoutingMember {
@@ -134,12 +134,16 @@ function route(
   }
   let member = exact ?? sameUnit[0];
   if (member) {
+    if (member.state === "superseded" && newer(observedAt, decisionId, member)) {
+      return attention(snapshot, decision, decisionId, "Superseded action observed again; reconcile lineage rather than silently reactivate");
+    }
     // Retain old keys as redirects. Never retag the original native issue or move buckets.
+    const priorIdentity = canonicalJson([member.identityKeys, member.aliases]);
     if (!member.identityKeys.includes(identity.originId)) member.identityKeys.push(identity.originId);
     member.aliases = [...new Set([...member.aliases, ...identity.aliases])].sort();
-    if (!newer(observedAt, decisionId, member)) return outcome(snapshot, member, "reused", "Same or older decision; original membership retained");
-    if (member.state === "superseded") {
-      return attention(snapshot, decision, decisionId, "Superseded action observed again; reconcile lineage rather than silently reactivate");
+    if (!newer(observedAt, decisionId, member)) {
+      if (priorIdentity !== canonicalJson([member.identityKeys, member.aliases])) touch(snapshot, member);
+      return outcome(snapshot, member, "reused", "Same or older decision; original membership retained");
     }
   } else {
     const related = snapshot.members.filter(item => item.ecosystem === input.ecosystem
