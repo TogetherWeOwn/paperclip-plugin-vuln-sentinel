@@ -10,7 +10,7 @@ import { object, SourceAttention } from "./source-http.js";
 const MAX_ENTRIES = 10_000;
 const NPM_NAME = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/u;
 const CRATE_NAME = /^[A-Za-z0-9_-]+$/u;
-export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.1", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
+export const INVENTORY_TOOLS = { "vuln-sentinel-inventory": "0.1.2", semver: "7.7.4", yaml: "2.9.1", "smol-toml": "1.9.1" };
 
 export interface InventoryDependency extends OsvDependency {
   locations: Array<{ path: string; locator: string }>;
@@ -236,6 +236,8 @@ export function parseLockfileInventory(snapshot: RepositoryLockfiles): LockfileI
     if (typeof file.content !== "string" || !/^[A-Za-z0-9_./-]+$/u.test(file.path)
       || file.path.split("/").some(part => !part || part === "." || part === "..")) throw new SourceAttention("invalid_inventory_file");
     const content = Buffer.from(file.content);
+    // Hash equality cannot detect lone surrogates silently replaced during UTF-8 encoding.
+    if (content.toString("utf8") !== file.content) throw new SourceAttention("invalid_inventory_utf8");
     bytes += content.byteLength;
     const blob = createHash("sha1").update(`blob ${content.byteLength}\0`).update(content).digest("hex");
     if (content.byteLength > 2 * 1024 * 1024 || bytes > 8 * 1024 * 1024

@@ -35,7 +35,7 @@ describe("immutable source journal", () => {
     const recorded = await journal.recordOsv("company", lockfileId, sourceOsv());
     expect(recorded.inputs).toHaveLength(1);
     expect(recorded.inputs[0]!.provenance).toMatchObject({
-      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.1", semver: "7.7.4" },
+      artifactDigest: lockfiles.artifactDigest, artifactKind: "lockfile", toolVersions: { "vuln-sentinel-inventory": "0.1.2", semver: "7.7.4" },
     });
     const saved = (await journal.readOsv("company", recorded.snapshotId))!;
     expect(saved.scan.osv).toEqual(sourceOsv());
@@ -69,11 +69,27 @@ describe("immutable source journal", () => {
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(2);
   });
 
-  it("holds historical parser drift without rewriting evidence and appends a distinct current inventory", async () => {
+  it("rejects lossy lockfile strings before attempting any journal write", async () => {
+    const lockfiles = sourceLockfiles();
+    const file = lockfiles.files[0]!;
+    file.content = file.content.replace('{', '{"note":"\ud800",');
+    file.sha256 = sha256(file.content);
+    file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
+    lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;
+    const before = structuredClone(lockfiles);
+    let writes = 0;
+    const guarded = new SourceJournal({ ...db, execute: async () => { writes++; throw new Error("unexpected write"); } }, now);
+    await expect(guarded.recordLockfiles("company", lockfiles)).rejects.toThrow("invalid_inventory_utf8");
+    expect(writes).toBe(0);
+    expect(lockfiles).toEqual(before);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(0);
+  });
+
+  it.each(["0.1.0", "0.1.1"])("holds historical parser %s drift without rewriting evidence and appends a distinct current inventory", async parser => {
     const lockfiles = sourceLockfiles();
     const id = await journal.recordLockfiles("company", lockfiles);
     const legacy = structuredClone((await journal.readLockfiles("company", id))!);
-    legacy.inventory.toolVersions = { "vuln-sentinel-inventory": "0.1.0", yaml: "2.9.1", "smol-toml": "1.9.1" };
+    legacy.inventory.toolVersions = { ...legacy.inventory.toolVersions, "vuln-sentinel-inventory": parser };
     const { inventorySha256: _, ...payload } = legacy.inventory;
     legacy.inventory.inventorySha256 = sha256(canonicalJson(payload));
     const legacyId = sha256(canonicalJson(["source-snapshot-v1", "lockfiles", legacy]));

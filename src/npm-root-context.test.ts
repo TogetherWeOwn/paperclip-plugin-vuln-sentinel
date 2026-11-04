@@ -322,7 +322,7 @@ describe("offline npm root declaration context", () => {
     f.tree.sha256 = "0".repeat(64);
     expect(() => observe(f)).toThrow("discovery_hash_mismatch");
     expect(() => observe(rawLockfile('{"lockfileVersion":3,"packages":{"":{}},"note":"' + "\ud800" + '"}')))
-      .toThrow("invalid_npm_root_utf8");
+      .toThrow("invalid_inventory_utf8");
   });
 
   it.each([

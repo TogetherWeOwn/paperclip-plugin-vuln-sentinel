@@ -92,6 +92,37 @@ describe("lockfile inventory boundary", () => {
     expect(() => parseLockfileInventory(input)).toThrow("inventory_content_mismatch");
   });
 
+  it.each(["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "Cargo.lock", "go.sum"])(
+    "rejects lossy UTF-8 in %s before format parsing, even with matching replacement-byte hashes", path => {
+      for (const value of ["\ud800", "\udfff", "\ud800x", "x\udfff", "\udfff\ud800"]) {
+        const input = snapshot({ [path]: value });
+        const before = structuredClone(input);
+        expect(() => parseLockfileInventory(input)).toThrow("invalid_inventory_utf8");
+        expect(input).toEqual(before);
+      }
+    });
+
+  it("rejects lossy metadata rather than claiming a successfully parsed npm inventory", () => {
+    const content = npm({ "node_modules/lib": npmRow() }).replace('"lockfileVersion":3', '"note":"\ud800","lockfileVersion":3');
+    expect(() => parseFile("package-lock.json", content)).toThrow("invalid_inventory_utf8");
+  });
+
+  it("rejects the entire snapshot when another file is not exact UTF-8", () => {
+    const input = snapshot({ "package-lock.json": npm({ "node_modules/lib": npmRow() }), "nested/go.sum": "\ud800" });
+    expect(() => parseLockfileInventory(input)).toThrow("invalid_inventory_utf8");
+  });
+
+  it.each(["雪", "😀", "�", "\\ud800", "\\udfff"])(
+    "retains exact UTF-8 or escaped JSON text %s without normalization", value => {
+      const content = npm({ "node_modules/lib": npmRow() }).replace('"lockfileVersion":3', `"note":"${value}","lockfileVersion":3`);
+      const input = snapshot({ "package-lock.json": content });
+      const result = parseLockfileInventory(input);
+      expect(result.coverage.configuredPathsParsed).toBe(true);
+      expect(result.dependencies[0]).toMatchObject({ package: "lib", version: "1.2.3", scope: "unknown", direct: null });
+      expect(result.artifactDigest).toBe(input.artifactDigest);
+      expect(input.files[0]!.content).toBe(content);
+    });
+
   it("rejects an unbound digest and invalid source revision", () => {
     const input = snapshot({ "package-lock.json": npm({}) });
     input.artifactDigest = `sha256:${"b".repeat(64)}`;

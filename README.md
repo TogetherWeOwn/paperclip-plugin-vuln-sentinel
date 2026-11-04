@@ -702,8 +702,15 @@ authorization.
 
 ### Locked-entry inventory and durable source records
 
-`parseLockfileInventory(snapshot)` verifies content/blob hashes and the configured
-path-set digest before parsing npm `package-lock.json`/`npm-shrinkwrap.json` v2/v3,
+`parseLockfileInventory(snapshot)` rejects strings that cannot round-trip through
+UTF-8 before validating content/blob hashes and the configured path-set digest.
+A lone surrogate is not silently replaced with `U+FFFD`: matching hashes over
+replacement bytes cannot prove exact source text. Any such file rejects the whole
+snapshot before parsing or journal writes (`invalid_inventory_utf8`), including
+unsupported files. Valid Unicode, literal `U+FFFD` and escaped JSON source text are
+retained unchanged. This checks the supplied string, not the authenticity or
+losslessness of an earlier byte-to-string decoder.
+It then parses npm `package-lock.json`/`npm-shrinkwrap.json` v2/v3,
 pnpm v9 and Cargo v3/v4. It deduplicates OSV query tuples while retaining every
 installed location and locked version. npm aliases require the real package name
 and matching official registry tarball identity; pnpm retains scoped/peer-version
@@ -713,7 +720,7 @@ Canonical SemVer prereleases and build metadata are preserved byte-for-byte in
 query tuples and installed locations. Equal-precedence versions such as `1.2.3`,
 `1.2.3+one` and `1.2.3+two` remain distinct identities; ordering equivalence is not
 query-coverage equality. Noncanonical prefixes/whitespace and malformed identifiers
-still require attention. Parser `0.1.1` and semver `7.7.4` are recorded in provenance.
+still require attention. Parser `0.1.2` and semver `7.7.4` are recorded in provenance.
 This does not expand the separate stable-only declaration/fixing-candidate APIs.
 
 Local/workspace links, Git/custom sources, missing entries, unsupported formats and
@@ -755,7 +762,7 @@ health and enforce source selection fences in downstream decision/publication
 writes, retaining the immutable references. Parser upgrades fail closed on historical
 inventory/version mismatch: old records and source selections are never rewritten
 or silently reinterpreted. Explicitly recording the same retained bytes with parser
-`0.1.1` appends a distinct content-derived inventory/snapshot ID; old references remain
+`0.1.2` appends a distinct content-derived inventory/snapshot ID; old references remain
 held, and an old OSV observation with stripped build metadata cannot satisfy new
 exact-tuple coverage. No automatic migration, current-source promotion, historical
 recovery or live reacquisition is enabled. An installed runtime upgrade still needs
