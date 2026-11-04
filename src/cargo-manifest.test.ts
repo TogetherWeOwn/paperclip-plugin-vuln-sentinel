@@ -64,7 +64,7 @@ describe("offline exact-tree Cargo declaration observations", () => {
     const { observationSha256, ...body } = result;
     expect(observationSha256).toBe(sha256(canonicalJson(["cargo-manifest-observation-v1", body])));
     expect(result.attention).toEqual(expect.arrayContaining(["cargo_workspace_inheritance_not_resolved", "cargo_target_selectors_not_evaluated",
-      "cargo_source_overrides_not_verified", "cargo_requirements_not_evaluated", "manifest_scope_not_applied"]));
+      "cargo_source_overrides_not_verified", "cargo_requirements_not_fully_evaluated", "manifest_scope_not_applied"]));
   });
 
   it.each(["1", "1.2", "^1.2.3", "~1.0", "*", ">=1, <2", "=1.2.3+build", "1.2.3-beta.1", "nonsense"])(
@@ -72,7 +72,7 @@ describe("offline exact-tree Cargo declaration observations", () => {
       const result = observe(`[dependencies]\nexample = ${JSON.stringify(requirement)}`);
       expect(result.declarations[0]!.versionRequirement).toBe(requirement);
       expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
-      expect(result.attention).toContain("cargo_requirements_not_evaluated");
+      expect(result.attention).toContain("cargo_requirements_not_fully_evaluated");
     });
 
   it("retains dotted declarations and prototype-shaped names as data", () => {
@@ -209,5 +209,117 @@ describe("offline exact-tree Cargo declaration observations", () => {
     expect(one.declarations).toEqual(two.declarations);
     expect(one.observationSha256).not.toBe(two.observationSha256);
     expect(observe(manifest)).toEqual(observe(manifest));
+  });
+});
+
+function compare(requirement: string, version: string) {
+  const content = `[dependencies]\nx = ${JSON.stringify(requirement)}`;
+  return observeCargoManifest(discovery(content), "Cargo.toml", content, { declaredName: "x", version });
+}
+
+describe("bounded Cargo stable candidate requirement observations", () => {
+  it.each([
+    ["1.2.3", "1.2.3", true], ["1.2.3", "1.9.9", true], ["1.2.3", "2.0.0", false],
+    ["1.2.3", "1.2.2", false], ["^1.2.3", "1.9.9", true], ["^1.2.3", "2.0.0", false],
+    ["0.2.3", "0.2.9", true], ["0.2.3", "0.3.0", false], ["^0.2.3", "0.2.2", false],
+    ["0.0.3", "0.0.3", true], ["0.0.3", "0.0.4", false], ["^0.0.0", "0.0.0", true],
+    ["^0.0.0", "0.0.1", false], ["~1.2.3", "1.2.9", true], ["~1.2.3", "1.3.0", false],
+    ["~0.0.3", "0.0.4", true], ["~0.0.3", "0.1.0", false], ["=1.2.3", "1.2.3", true],
+    ["=1.2.3", "1.2.4", false], [">=1.2.3", "2.0.0", true], [">=1.2.3", "1.2.2", false],
+    [">1.2.3", "1.2.3", false], [">1.2.3", "1.2.4", true], ["<=1.2.3", "1.2.3", true],
+    ["<=1.2.3", "1.2.4", false], ["<1.2.3", "1.2.3", false], ["<1.2.3", "1.2.2", true],
+    [">=1.2.3, <1.5.0", "1.4.9", true], [">=1.2.3, <1.5.0", "1.5.0", false],
+    ["1.2.3, <1.5.0", "1.4.9", true], ["1.2.3, <1.5.0", "1.5.0", false],
+    [">=2.0.0, <1.0.0", "1.5.0", false], [" ^1.2.3 , >=1.3.0 ", "1.3.0", true],
+  ] as const)("compares Cargo requirement %s against %s without fix proof", (requirement, version, matches) => {
+    const result = compare(requirement, version);
+    expect(result.candidate).toEqual({ declaredName: "x", version });
+    expect(result.declarations[0]).toMatchObject({ versionRequirement: requirement, requirementKind: "stable_semver_subset",
+      candidateRangeMatch: matches ? "matches" : "does_not_match" });
+    expect(result).toMatchObject({ status: "attention", scope: "unknown", direct: null, compatibleFixVerified: false });
+    expect(result.attention).toEqual(expect.arrayContaining(["manifest_range_not_compatible_fix", "release_availability_not_verified",
+      "cargo_declared_names_not_registry_identity", "cargo_features_and_dependency_resolution_not_evaluated"]));
+  });
+
+  it.each(["1", "1.2", "0.0", "*", "1.*", "1.2.*", "1.2.x", "v1.2.3", "01.2.3", "1.02.3", "1.2.03",
+    "1.2.3-beta.1", "1.2.3+build", "1.2.3 || 2.0.0", ">=1.2.3 <2.0.0", "1.2.3 - 2.0.0", "= 1.2.3",
+    ",1.2.3", "1.2.3,", "1.2.3,,<2.0.0", "nonsense", "1.2.3 ", "9007199254740992.0.0"])(
+    "withholds unsupported requirement %s instead of reporting exclusion", requirement => {
+      const result = compare(requirement, "9.9.9");
+      expect(result.declarations[0]).toMatchObject({ versionRequirement: requirement, requirementKind: "unsupported", candidateRangeMatch: "unknown" });
+      expect(result.attention).toContain("unsupported_cargo_manifest_requirement");
+      expect(result.compatibleFixVerified).toBe(false);
+    });
+
+  it("bounds conjunctions without truncating a conflicting ninth clause", () => {
+    const clauses = Array(8).fill(">=1.0.0").join(",");
+    expect(compare(clauses, "1.2.3").declarations[0]!.candidateRangeMatch).toBe("matches");
+    expect(compare(`${clauses},<1.0.0`, "1.2.3").declarations[0]).toMatchObject({ requirementKind: "unsupported", candidateRangeMatch: "unknown" });
+  });
+
+  it("checks a stable boundary grid using independent full-triple interval expectations", () => {
+    const cases = [
+      ["1.2.3", [1, 2, 3], [2, 0, 0]], ["^0.2.3", [0, 2, 3], [0, 3, 0]],
+      ["^0.0.3", [0, 0, 3], [0, 0, 4]], ["~0.0.3", [0, 0, 3], [0, 1, 0]],
+      ["~1.2.3", [1, 2, 3], [1, 3, 0]], [">=0.2.3, <1.3.0", [0, 2, 3], [1, 3, 0]],
+    ] as const;
+    const order = (a: readonly number[], b: readonly number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
+    for (const [requirement, lower, upper] of cases) {
+      for (const tuple of [[0, 0, 0], [0, 0, 2], [0, 0, 3], [0, 0, 4], [0, 1, 0], [0, 2, 2], [0, 2, 3],
+        [0, 2, 4], [0, 3, 0], [1, 2, 2], [1, 2, 3], [1, 2, 4], [1, 3, 0], [1, 9, 9], [2, 0, 0]]) {
+        const expected = order(tuple, lower) >= 0 && order(tuple, upper) < 0;
+        expect(compare(requirement, tuple.join(".")).declarations[0]!.candidateRangeMatch,
+          `${requirement}: ${tuple.join(".")}`).toBe(expected ? "matches" : "does_not_match");
+      }
+    }
+  });
+
+  it("preserves conflicting package/workspace/target requirements and unreported inheritance independently", () => {
+    const content = '[dependencies]\nx = "1.2.3"\ny = "1.2.3"\n[dev-dependencies]\nx = "=2.0.0"\n[workspace.dependencies]\nx = "^2.0.0"\n[target.unix.dependencies]\nx = { workspace = true }';
+    const result = observeCargoManifest(discovery(content), "Cargo.toml", content, { declaredName: "x", version: "1.5.0" });
+    expect(result.declarations.map(row => row.candidateRangeMatch)).toEqual(["matches", null, "does_not_match", "does_not_match", "unknown"]);
+    expect(result.declarations.at(-1)).toMatchObject({ requirementKind: "not_reported", versionRequirement: null, workspaceInherited: true });
+    expect(result.attention).toContain("cargo_workspace_inheritance_not_resolved");
+    expect(result.compatibleFixVerified).toBe(false);
+  });
+
+  it("selects only an explicit declaration key, never guesses a rename or registry identity", () => {
+    const content = '[dependencies]\nalias = { package = "real", version = "1.2.3", git = "opaque" }';
+    const tree = discovery(content);
+    const missing = observeCargoManifest(tree, "Cargo.toml", content, { declaredName: "real", version: "1.5.0" });
+    expect(missing.attention).toContain("candidate_not_declared_in_cargo_manifest");
+    expect(missing.declarations[0]!.candidateRangeMatch).toBeNull();
+    const selected = observeCargoManifest(tree, "Cargo.toml", content, { declaredName: "alias", version: "1.5.0" });
+    expect(selected.declarations[0]).toMatchObject({ packageHint: "real", sourceHints: { git: "opaque" }, candidateRangeMatch: "matches" });
+    expect(selected.attention).toContain("cargo_source_overrides_not_verified");
+    expect(selected.compatibleFixVerified).toBe(false);
+  });
+
+  it.each([null, {}, { declaredName: "x" }, { declaredName: "bad/name", version: "1.2.3" },
+    { declaredName: "x", version: "1" }, { declaredName: "x", version: "01.2.3" },
+    { declaredName: "x", version: "1.2.3-beta.1" }, { declaredName: "x", version: "1.2.3+build" },
+    { declaredName: "x", version: 123 }, { declaredName: "x", version: "1.2.3\n" }])(
+    "rejects unsupported candidate %j rather than converting it to a negative", candidate => {
+      const content = '[dependencies]\nx = "1.2.3"';
+      expect(() => observeCargoManifest(discovery(content), "Cargo.toml", content,
+        candidate as Parameters<typeof observeCargoManifest>[3])).toThrow("unsupported_cargo_manifest_candidate");
+    });
+
+  it("keeps unqueried and missing requirements distinct and candidate-specific hashes replayable", () => {
+    const content = '[dependencies]\nx = { workspace = true }\ny = "1.2.3"';
+    const tree = discovery(content);
+    const plain = observeCargoManifest(tree, "Cargo.toml", content);
+    expect(plain.candidate).toBeNull();
+    expect(plain.declarations.map(row => row.candidateRangeMatch)).toEqual([null, null]);
+    const candidate = { declaredName: "x", version: "1.5.0" };
+    const selected = observeCargoManifest(tree, "Cargo.toml", content, candidate);
+    expect(selected.declarations.map(row => row.candidateRangeMatch)).toEqual(["unknown", null]);
+    expect(selected.observationSha256).not.toBe(plain.observationSha256);
+    expect(selected.source).toEqual(plain.source);
+    expect(selected.toolVersions).toMatchObject({ "vuln-sentinel-cargo-manifest": "1.1.0", semver: "7.7.4" });
+    const expected = structuredClone(selected);
+    candidate.version = "2.0.0";
+    expect(selected).toEqual(expected);
+    expect(observeCargoManifest(tree, "Cargo.toml", content, expected.candidate!)).toEqual(expected);
   });
 });

@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
+import { Range, satisfies, valid } from "semver";
 import { parse as parseToml } from "smol-toml";
 import { validateRepositoryDiscovery, type RepositoryDiscovery } from "./github-discovery.js";
 import { canonicalJson, sha256 } from "./identity.js";
 import { object, SourceAttention } from "./source-http.js";
 
-export const CARGO_MANIFEST_VERSION = "1.0.0";
+export const CARGO_MANIFEST_VERSION = "1.1.0";
 const SECTIONS = ["dependencies", "dev-dependencies", "build-dependencies"] as const;
 const SOURCE_FIELDS = ["path", "git", "registry", "registry-index", "branch", "tag", "rev"] as const;
 const NAME = /^[A-Za-z0-9_-]{1,64}$/u;
+
+// This is a declared table key, not an authenticated crates.io package identity.
+export interface CargoManifestCandidate { declaredName: string; version: string }
 
 export interface CargoManifestObservation {
   version: typeof CARGO_MANIFEST_VERSION;
@@ -16,6 +20,7 @@ export interface CargoManifestObservation {
     repo: string; sourceSha: string; treeSha: string; discoverySha256: string;
     path: string; blobSha: string; sha256: string;
   };
+  candidate: CargoManifestCandidate | null;
   declarations: Array<{
     owner: "package" | "workspace" | "target";
     target: string | null;
@@ -24,6 +29,9 @@ export interface CargoManifestObservation {
     // A rename hint is not an authenticated registry identity or installed-owner edge.
     packageHint: string | null;
     versionRequirement: string | null;
+    requirementKind: "stable_semver_subset" | "unsupported" | "not_reported";
+    // Null is unqueried; unknown is not an exclusion or an inherited requirement.
+    candidateRangeMatch: "matches" | "does_not_match" | "unknown" | null;
     workspaceInherited: boolean;
     sourceHints: Partial<Record<typeof SOURCE_FIELDS[number], string>>;
     unevaluatedFields: string[];
@@ -40,8 +48,28 @@ function text(value: unknown, limit: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= limit && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-/** Exact-tree declared Cargo requirements only; no Cargo resolver, target evaluation or fix proof. */
-export function observeCargoManifest(discovery: RepositoryDiscovery, path: string, content: string): CargoManifestObservation {
+function stable(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 256 && /^\d+\.\d+\.\d+$/u.test(value) && valid(value) === value;
+}
+
+/** Cargo bare triples mean caret, unlike npm exact triples. Commas are conjunctions, never alternatives. */
+function requirementRange(requirement: string | null): Range | null {
+  if (requirement === null) return null;
+  const clauses = requirement.split(",");
+  if (clauses.length > 8) return null;
+  const translated: string[] = [];
+  for (const clause of clauses) {
+    const match = /^ *(<=|>=|<|>|=|\^|~)?(\d+\.\d+\.\d+) *$/u.exec(clause);
+    if (!match || !stable(match[2])) return null;
+    translated.push(`${match[1] ?? "^"}${match[2]}`);
+  }
+  try { return new Range(translated.join(" ")); } catch { return null; }
+}
+
+/** Exact-tree declaration/range observations only; no Cargo resolver, target evaluation or fix proof. */
+export function observeCargoManifest(
+  discovery: RepositoryDiscovery, path: string, content: string, candidate?: CargoManifestCandidate,
+): CargoManifestObservation {
   const snapshot = validateRepositoryDiscovery(discovery);
   if (typeof path !== "string" || path.slice(path.lastIndexOf("/") + 1) !== "Cargo.toml") {
     throw new SourceAttention("unsupported_cargo_manifest_path");
@@ -62,10 +90,14 @@ export function observeCargoManifest(discovery: RepositoryDiscovery, path: strin
   let root: Record<string, unknown>;
   try { root = object(parseToml(content), "invalid_cargo_manifest"); }
   catch { throw new SourceAttention("invalid_cargo_manifest_toml"); }
+  if (candidate !== undefined && (!candidate || typeof candidate.declaredName !== "string"
+    || !NAME.test(candidate.declaredName) || !stable(candidate.version))) {
+    throw new SourceAttention("unsupported_cargo_manifest_candidate");
+  }
   const attention = new Set([
     "manifest_lockfile_association_not_verified", "manifest_workspace_association_not_verified",
     "manifest_scope_not_applied", "manifest_range_not_compatible_fix", "release_availability_not_verified",
-    "manifest_source_authenticity_and_freshness_not_verified", "cargo_requirements_not_evaluated",
+    "manifest_source_authenticity_and_freshness_not_verified", "cargo_requirements_not_fully_evaluated",
     "cargo_features_and_dependency_resolution_not_evaluated", "cargo_declared_names_not_registry_identity",
   ]);
   for (const field of ["workspace", "patch", "replace", "features", "profile", "cargo-features"]) {
@@ -113,8 +145,13 @@ export function observeCargoManifest(discovery: RepositoryDiscovery, path: strin
           attention.add("cargo_declaration_without_requirement_or_source");
         }
       }
+      const range = requirementRange(versionRequirement);
+      const requirementKind = versionRequirement === null ? "not_reported" : range ? "stable_semver_subset" : "unsupported";
+      if (requirementKind === "unsupported") attention.add("unsupported_cargo_manifest_requirement");
+      const candidateRangeMatch = candidate?.declaredName !== declaredName ? null : !range ? "unknown"
+        : satisfies(candidate.version, range) ? "matches" : "does_not_match";
       declarations.push({ owner, target, section, declaredName, packageHint, versionRequirement,
-        workspaceInherited, sourceHints, unevaluatedFields });
+        requirementKind, candidateRangeMatch, workspaceInherited, sourceHints, unevaluatedFields });
     }
   };
   const readSections = (owner: "package" | "target", target: string | null, row: Record<string, unknown>) => {
@@ -138,12 +175,16 @@ export function observeCargoManifest(discovery: RepositoryDiscovery, path: strin
     }
   }
   if (!declarations.length) attention.add("empty_cargo_declarations_not_absence");
+  if (candidate && !declarations.some(row => row.declaredName === candidate.declaredName)) {
+    attention.add("candidate_not_declared_in_cargo_manifest");
+  }
   const result: Omit<CargoManifestObservation, "observationSha256"> = {
     version: CARGO_MANIFEST_VERSION, status: "attention",
     source: { repo: snapshot.repo, sourceSha: snapshot.sourceSha, treeSha: snapshot.treeSha,
       discoverySha256: snapshot.sha256, path, blobSha, sha256: sha256(content) },
+    candidate: candidate ? { declaredName: candidate.declaredName, version: candidate.version } : null,
     declarations, scope: "unknown", direct: null, compatibleFixVerified: false, attention: [...attention].sort(),
-    toolVersions: { "vuln-sentinel-cargo-manifest": CARGO_MANIFEST_VERSION, "smol-toml": "1.9.1" },
+    toolVersions: { "vuln-sentinel-cargo-manifest": CARGO_MANIFEST_VERSION, "smol-toml": "1.9.1", semver: "7.7.4" },
   };
   const encoded = canonicalJson(["cargo-manifest-observation-v1", result]);
   if (Buffer.byteLength(encoded) > 1024 * 1024) throw new SourceAttention("cargo_manifest_observation_capacity");

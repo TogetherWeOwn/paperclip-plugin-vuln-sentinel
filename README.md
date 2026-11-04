@@ -119,7 +119,7 @@ permissive parser or adding another matching engine.
 
 ## Offline exact-tree Cargo manifest observations
 
-`observeCargoManifest(discovery, path, content)` binds a regular tracked `Cargo.toml`
+`observeCargoManifest(discovery, path, content, candidate?)` binds a regular tracked `Cargo.toml`
 to the retained repository commit/tree/discovery, Git blob and any reported UTF-8
 byte size. Invalid/duplicate TOML, mismatched bytes, lossy encoding, symlinks and
 submodules reject. It performs no fetch, Cargo/package-manager/script execution,
@@ -138,8 +138,22 @@ underscore dependency sections are explicitly held, not silently normalized. Raw
 identity binds ignored fields as well as observed fields. This is a bounded declaration
 observation, **not Cargo manifest validity or dependency resolution**.
 
-No npm range semantics are applied to Cargo requirements. Every output remains
-`attention`, `scope: "unknown"`, `direct: null` and `compatibleFixVerified: false`.
+An optional `{ declaredName, version }` candidate compares one explicit declaration key
+across every owner/section independently, never a guessed rename or registry package.
+The candidate must be a canonical stable full triple. A bounded Cargo requirement subset
+supports full stable triples with bare/caret, tilde, exact and comparison operators,
+and at most eight comma-conjoined clauses. **Bare Cargo `1.2.3` means `^1.2.3`, not
+npm's exact `1.2.3`.** Zero-major caret bounds and tilde bounds remain distinct.
+Only that grammar is translated to the existing pinned SemVer evaluator; no general
+npm syntax is accepted. Partial versions, wildcards, alternatives, prerelease/build
+requirements and other unsupported syntax stay `unknown`, never an exclusion. This
+is not a claim those requirements are invalid Cargo. Missing inherited requirements
+stay unknown, unqueried rows stay null, and raw text/conflicting declarations remain.
+Candidate range results and observer/evaluator versions participate in the observation
+hash without changing retained source identities.
+
+Every output remains `attention`, `scope: "unknown"`, `direct: null` and
+`compatibleFixVerified: false`, including matches on all observed declarations.
 Neither a dev section nor a target selector establishes installed scope, and neither
 a rename hint nor an omitted source establishes crates.io identity. Empty declarations
 never prove absence. No lockfile/workspace/installed-owner association, all-version
@@ -149,14 +163,16 @@ rescan resolution or publication permission is inferred. No matcher/rule-6 input
 Limits: 2 MiB raw content, 10,000 declarations shared across all owners/sections,
 10,000 target owners (including empty ones), 256-character requirements,
 1,024-character target/source hints and 1 MiB output. Limits fail rather than truncate.
-Observer `1.0.0` and existing pinned `smol-toml` `1.9.1` are recorded independently
-of inventory parser provenance; existing stored inventories are unchanged. These pure
-offline tests are not actual-boundary integration or real-pilot acceptance. Publication
-remains NOT ADMISSIBLE/off; host authority AND groundwork remain deferred.
+Observer `1.1.0` and existing pinned `smol-toml` `1.9.1` / `semver` `7.7.4` are recorded
+independently of inventory parser provenance; existing stored inventories and prior
+observations are unchanged, with no automatic migration or current-source promotion.
+These pure offline tests are not actual-boundary integration or real-pilot acceptance.
+Publication remains NOT ADMISSIBLE/off; host authority AND groundwork remain deferred.
 
 REA angle: reuse retained discovery validation, the existing exact-byte/blob protocol,
-canonical content identities and pinned TOML parser, without introducing another source
-transport, dependency resolver, authority store or worker.
+canonical content identities, pinned TOML/SemVer parsers and Cargo's published
+[version requirement semantics](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#version-requirement-syntax),
+without introducing another source transport, dependency resolver, authority store or worker.
 
 ## Offline exact-tree npm manifest observations
 
