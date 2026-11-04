@@ -12,6 +12,8 @@ export { parseLockfileInventory, INVENTORY_TOOLS } from "./inventory.js";
 export type { LockfileInventory, InventoryDependency, InventoryFile } from "./inventory.js";
 export { RepositoryScan } from "./repository-scan.js";
 export type { RepositoryScanOptions, RepositoryScanResult } from "./repository-scan.js";
+export { SourceComparison } from "./source-comparison.js";
+export type { SourceComparisonResult, OsvComparisonObservation } from "./source-comparison.js";
 export { SourceDecisions } from "./source-decisions.js";
 export type { SourceDecisionResult } from "./source-decisions.js";
 export { SourceEffects } from "./source-effects.js";

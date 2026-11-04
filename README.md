@@ -71,6 +71,8 @@ Implemented:
   package/version/location context, with explicit unsupported and nonmatching states.
 - Explicit OSV→retained feeds→source-fenced local decision/routing scan orchestration,
   with current-source/deadline checks and no native publication or enabled pilot.
+- Query-only retained Dependabot/OSV comparison for the same current lockfile source,
+  preserving mismatches and ambiguous alias bridges without policy mutation or switching.
 
 Still required before installation/pilot acceptance: runtime discovery/source-poll
 wiring, manifest/workspace association, other lockfile formats and complete coverage, live source-pinned publication wiring
@@ -255,9 +257,38 @@ association, source switching, authentication, a publication permit or a rescan.
 writes no decisions, routing, issue claims or new mutable latest-source state. The
 immutable parents suffice to reproduce the context; there is no context callback.
 
+`SourceComparison.read(currentSource, dependabotSnapshotId, osvSnapshotId)` compares
+only retained evidence. It reuses the exact-inventory context above, requires OSV's
+exact immutable lockfile parent and a query at/after the current poll completion,
+and checks freshness and source supersession again before return, including empty
+results. It makes namespace queries only; no HTTP request, projection write, source
+selection, claim/pin mutation or native issue operation occurs.
+
+Each alert tuple retains its exact path/locators and all OSV groups sharing both the
+installed ecosystem/package/version and at least one observed advisory identifier.
+Shared identifiers are correspondence only: two separate OSV groups bridged by an
+alert remain separate and explicitly ambiguous. No aliases are merged or identities
+retagged. Unmatched OSV groups and unmatched alert tuples remain visible. Missing
+manifest association stays in the original context, not a guessed tuple join.
+Range, severity and withdrawal disagreements remain attention; unsupported ranges
+and unavailable OSV aliases remain unknown/incomplete. Provider revisions are
+retained separately, never equated by timestamps. Scope/relationship/patch hints do
+not alter policy, priority, remediation targets, provenance or VEX. Even agreement
+is not a commit-bound alert receipt, verified repository coverage or absence proof.
+
+The bounded result always remains `attention` with `policySource: osv_unchanged`,
+source-switch/publication/pilot holds and a versioned deterministic content hash.
+Repeated comparisons do not restamp either observation. Expansion beyond 8 MiB
+holds the whole result instead of truncating it; storage failures return no completed
+comparison. Reads are not an atomic snapshot or a continuing publication permit.
+This is preparation for explicit source-policy reconciliation, not its implementation,
+provider switching, authentication, runtime wiring, registration or enablement. No
+supported trusted method is added. Neither empty nor matching observations resolve
+a member, close an issue, release pins, recover a claim or start a pilot timestamp.
+
 REA angle: reused the shipped GitHub Upstream fixed-origin/redirect refusal and explicit
 rate-limit classification, plus this package's bounded HTTP and immutable namespace
-journal pattern. No scheduler, token broker or alternative issue system is introduced.
+journal/context patterns. No scheduler, token broker or alternative issue system is introduced.
 
 
 `GitHubRepositoryDiscovery.read(repositories, previousDiscoveries)` gets default commit
