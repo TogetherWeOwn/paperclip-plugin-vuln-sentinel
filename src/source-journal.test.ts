@@ -422,6 +422,125 @@ describe("immutable source journal", () => {
     expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
   });
 
+  describe("exact inventory query coverage", () => {
+    function fixture() {
+      const lockfiles = sourceLockfiles();
+      const npm = JSON.parse(lockfiles.files[0]!.content);
+      npm.packages["node_modules/parent/node_modules/lib"] = structuredClone(npm.packages["node_modules/lib"]);
+      npm.packages["node_modules/other/node_modules/lib"] = {
+        version: "2.0.0", resolved: "https://registry.npmjs.org/lib/-/lib-2.0.0.tgz",
+      };
+      const cargo = `version = 4\n[[package]]\nname = "lib"\nversion = "1.2.3"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${"a".repeat(64)}"\n`;
+      const files: Array<[string, string]> = [
+        ["package-lock.json", JSON.stringify(npm)],
+        ["tools/package-lock.json", sourceLockfiles().files[0]!.content],
+        ["Cargo.lock", cargo],
+      ];
+      lockfiles.files = files.map(([path, content]) => ({ path, content, sha256: sha256(content), etag: null,
+        blobSha: createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0`).update(content).digest("hex"),
+      }));
+      lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([...lockfiles.files]
+        .sort((a, b) => a.path.localeCompare(b.path)).map(file => [file.path, file.sha256])))}`;
+      const osv = sourceOsv();
+      osv.observations.push(
+        { dependency: { ecosystem: "npm", package: "lib", version: "2.0.0" }, advisoryIds: [] },
+        { dependency: { ecosystem: "crates.io", package: "lib", version: "1.2.3" }, advisoryIds: [] },
+      );
+      return { lockfiles, osv: rehash(osv) };
+    }
+
+    it.each([false, true])("queries each exact tuple once, retaining all installation locations (reversed=%s)", async reversed => {
+      const { lockfiles, osv } = fixture();
+      if (reversed) { lockfiles.files.reverse(); osv.observations.reverse(); }
+      const before = structuredClone({ lockfiles, osv });
+      const id = await journal.recordLockfiles("company", lockfiles);
+      const scans = await Promise.all(Array.from({ length: 5 }, () => journal.recordOsv("company", id, rehash(osv))));
+      expect(new Set(scans.map(scan => scan.snapshotId)).size).toBe(1);
+      const stored = (await new SourceJournal(db, now).readOsv("company", scans[0]!.snapshotId))!;
+      expect(stored.inventory.dependencies).toHaveLength(3);
+      expect(stored.inventory.dependencies.find(dep => dep.ecosystem === "npm" && dep.version === "1.2.3")!.locations).toEqual([
+        { path: "package-lock.json", locator: "node_modules/lib" },
+        { path: "package-lock.json", locator: "node_modules/parent/node_modules/lib" },
+        { path: "tools/package-lock.json", locator: "node_modules/lib" },
+      ]);
+      expect(stored.scan.osv.observations).toEqual(osv.observations);
+      expect(stored.inputs).toEqual(scans[0]!.inputs);
+      expect(stored.inputs).toHaveLength(1);
+      expect(stored.inputs[0]).toMatchObject({ ecosystem: "npm", package: "lib", version: "1.2.3",
+        scope: "unknown", fixedVersion: null, compatibleFixVerified: false,
+        provenance: { artifactDigest: lockfiles.artifactDigest, source: { snapshotSha256: rehash(osv).snapshotSha256 },
+          toolVersions: stored.inventory.toolVersions },
+      });
+      expect(stored.inventory.coverage).toMatchObject({ configuredPathsParsed: true,
+        fullDependencyClosure: "not_proven", runtimeCompleteness: "not_proven" });
+      expect({ lockfiles, osv }).toEqual(before);
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(2);
+      for (const table of ["decision_records", "delivery_routing"]) {
+        expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
+      }
+    });
+
+    const mutations: Array<[string, (osv: OsvSnapshot) => void]> = [
+      ["omitted empty-result tuple", osv => { osv.observations.pop(); }],
+      ["extra tuple", osv => { osv.observations.push({ dependency: { ecosystem: "npm", package: "other", version: "1.2.3" }, advisoryIds: [] }); }],
+      ["duplicate replacing another tuple", osv => { osv.observations[2] = structuredClone(osv.observations[1]!); }],
+      ["per-location repeated query", osv => { osv.observations.push(structuredClone(osv.observations[0]!)); }],
+      ["changed ecosystem", osv => { osv.observations[2]!.dependency.ecosystem = "npm"; }],
+      ["changed name", osv => { osv.observations[2]!.dependency.package = "Lib"; }],
+      ["changed version", osv => { osv.observations[1]!.dependency.version = "2.0.1"; }],
+      ["equal-precedence build identity", osv => { osv.observations[1]!.dependency.version = "2.0.0+build.1"; }],
+    ];
+    it.each(mutations)("rejects %s before persisting OSV evidence", async (_, mutate) => {
+      const { lockfiles, osv } = fixture();
+      const id = await journal.recordLockfiles("company", lockfiles);
+      mutate(osv);
+      const changed = rehash(osv);
+      const before = structuredClone(changed);
+      await expect(journal.recordOsv("company", id, changed)).rejects.toThrow("osv_inventory_coverage_mismatch");
+      expect(changed).toEqual(before);
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(1);
+    });
+
+    it.each(mutations)("revalidates %s on read even when both snapshot hashes were recomputed", async (_, mutate) => {
+      const { lockfiles, osv } = fixture();
+      const id = await journal.recordLockfiles("company", lockfiles);
+      const recorded = await journal.recordOsv("company", id, osv);
+      const scan = (await journal.readOsv("company", recorded.snapshotId))!.scan;
+      mutate(scan.osv);
+      scan.osv = rehash(scan.osv);
+      const changedId = sha256(canonicalJson(["source-snapshot-v1", "osv", scan]));
+      await postgres.query(`UPDATE ${DATABASE_NAMESPACE}.source_snapshots SET snapshot_id = $1, bundle = $2 WHERE snapshot_id = $3`,
+        [changedId, canonicalJson(scan), recorded.snapshotId]);
+      await expect(new SourceJournal(db, now).readOsv("company", changedId)).rejects.toThrow("osv_inventory_coverage_mismatch");
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.source_snapshots`)).rows).toHaveLength(2);
+      for (const table of ["decision_records", "delivery_routing"]) {
+        expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
+      }
+    });
+
+    it("preserves distinct empty-result query times without inventing decisions or resolution", async () => {
+      const { lockfiles, osv } = fixture();
+      const id = await journal.recordLockfiles("company", lockfiles);
+      osv.records = [];
+      osv.observations.forEach(row => { row.advisoryIds = []; });
+      const first = await journal.recordOsv("company", id, rehash(osv));
+      osv.queriedAt = "2026-11-04T04:30:30Z";
+      const second = await journal.recordOsv("company", id, rehash(osv));
+      expect(second.snapshotId).not.toBe(first.snapshotId);
+      for (const result of [first, second]) {
+        expect(result.inputs).toEqual([]);
+        const stored = (await journal.readOsv("company", result.snapshotId))!;
+        expect(stored.scan.osv.observations).toHaveLength(3);
+        expect(stored.inventory.coverage.runtimeCompleteness).toBe("not_proven");
+      }
+      expect((await journal.readOsv("company", first.snapshotId))!.scan.osv.queriedAt).toBe("2026-11-04T04:30:00Z");
+      expect((await journal.readOsv("company", second.snapshotId))!.scan.osv.queriedAt).toBe(osv.queriedAt);
+      for (const table of ["decision_records", "delivery_routing", "finding_records"]) {
+        expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.${table}`)).rows).toEqual([]);
+      }
+    });
+  });
+
   it("rejects raw/derived record divergence even with a recomputed snapshot hash", async () => {
     const id = await journal.recordLockfiles("company", sourceLockfiles());
     const osv = sourceOsv();
