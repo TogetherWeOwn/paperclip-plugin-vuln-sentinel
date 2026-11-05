@@ -656,6 +656,119 @@ describe("feed-version provenance coverage", () => {
   });
 });
 
+describe("scope and priority boundaries", () => {
+  const severities = ["critical", "high", "moderate", "low", "unknown"] as const;
+  const profiles = [
+    { scope: "runtime", fallback: [1, 2, 3, 3, 3], cvss: [1, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "mixed", fallback: [1, 2, 3, 3, 3], cvss: [1, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "unknown", fallback: [3, 2, 3, 3, 3], cvss: [2, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "development", fallback: [3, 3, 3, 3, 3], cvss: [3, 3, 3, 3, 3], epss: [2, 2, 2, 2, 2] },
+  ] as const;
+  const scores = [
+    { probability: 0, cvss4Base: null, column: "fallback" },
+    { probability: 0.039999, cvss4Base: null, column: "fallback" },
+    { probability: 0.04, cvss4Base: null, column: "epss" },
+    { probability: 1, cvss4Base: null, column: "epss" },
+    { probability: null, cvss4Base: null, column: "fallback" },
+    { probability: NaN, cvss4Base: null, column: "fallback" },
+    { probability: -0.1, cvss4Base: null, column: "fallback" },
+    { probability: 1.1, cvss4Base: null, column: "fallback" },
+    { probability: "0.9", cvss4Base: null, column: "fallback" },
+    { probability: null, cvss4Base: 6.999, column: "fallback" },
+    { probability: null, cvss4Base: 7, column: "cvss" },
+    { probability: null, cvss4Base: 10, column: "cvss" },
+    { probability: null, cvss4Base: 10.001, column: "fallback" },
+    { probability: null, cvss4Base: NaN, column: "fallback" },
+    { probability: null, cvss4Base: Infinity, column: "fallback" },
+    { probability: null, cvss4Base: "9.0", column: "fallback" },
+  ] as const;
+
+  it.each(profiles.flatMap(profile => severities.map((severity, index) => ({ ...profile, severity, index }))))(
+    "$scope/$severity follows the priority table across score boundaries and actionable rule paths",
+    profile => {
+      for (const score of scores) {
+        const priority = profile[score.column][profile.index]!;
+        for (const path of ["residual", "fix", "own_function_hit"] as const) {
+          const input = finding({ scope: profile.scope, severity: profile.severity });
+          Object.assign(input.provenance.epss!, { probability: score.probability });
+          Object.assign(input, { cvss4Base: score.cvss4Base });
+          if (path === "fix") Object.assign(input, { fixedVersion: "1.0.1", compatibleFixVerified: true });
+          if (path === "own_function_hit") input.functions = { ...closure(), ownHits: 1 };
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ priority, slaDays: [1, 7, 30, 90][priority],
+            delivery: profile.scope === "development" || priority === 3 ? "weekly" : "finding",
+            matchedRule: path === "fix" ? 6 : 8,
+            applicability: path === "own_function_hit" ? "affected" : "unknown", proposedVex: null });
+          expect(result.trace.filter(rule => rule === 7)).toHaveLength(1);
+          expect(result.proposedRemediation !== null).toBe(path === "fix");
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      }
+    },
+  );
+
+  it.each([undefined, null, "", "Development", "development ", "dev", true, 1, ["development"], { scope: "development" }]
+    .map(scope => ({ scope })))("unsupported scope $scope never becomes proven dev-only", ({ scope }) => {
+    for (const severity of severities) {
+      for (const probability of [null, 0.04]) {
+        const input = finding({ severity });
+        Object.assign(input, { scope });
+        input.provenance.epss!.probability = probability;
+        const before = structuredClone(input);
+        const expected = decide({ ...input, scope: "unknown" });
+        const result = decide(input);
+        expect(result).toMatchObject({ priority: expected.priority, slaDays: expected.slaDays,
+          delivery: expected.delivery, applicability: "unknown", matchedRule: 8,
+          proposedVex: null, proposedRemediation: null });
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      }
+    }
+  });
+
+  it.each(profiles.flatMap(({ scope }) => ["MAL", "KEV"].map(kind => ({ scope, kind }))))(
+    "$scope cannot downgrade or batch $kind when scores are invalid",
+    ({ scope, kind }) => {
+      const input = finding({ scope, severity: "unknown", cvss4Base: NaN,
+        fixedVersion: "1.0.1", compatibleFixVerified: true, functions: closure() });
+      input.provenance.epss!.probability = NaN;
+      if (kind === "MAL") input.aliases[0]!.aliases.push("MAL-2026-1");
+      else input.provenance.kev!.aliases.push("CVE-2026-12345");
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ applicability: "affected", matchedRule: 2, priority: 0,
+        slaDays: 1, delivery: "immediate", trace: [0, 2], proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(profiles)("$scope priority survives all-version reduction beside outside and unknown tuples", profile => {
+    for (const probability of [null, 0.04]) {
+      const active = finding({ scope: profile.scope, functions: { ...closure(), ownHits: 1 } });
+      active.provenance.epss!.probability = probability;
+      const outside = structuredClone(active);
+      outside.version = "2.0.0";
+      outside.versionEvidence.status = "outside";
+      const unknown = structuredClone(active);
+      unknown.version = "3.0.0";
+      unknown.versionEvidence.status = "unknown";
+      const inputs = [unknown, outside, active];
+      const before = structuredClone(inputs);
+      const expected = decide(active);
+      const result = decide(aggregateFindingInputs(inputs)[0]!);
+      expect(result).toMatchObject({ priority: expected.priority, slaDays: expected.slaDays,
+        delivery: expected.delivery, applicability: "affected", matchedRule: 8,
+        proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions!.map(tuple => tuple.applicability)).toEqual(["affected", "dropped", "unknown"]);
+      expect(decide(aggregateFindingInputs([...inputs].reverse())[0]!)).toEqual(result);
+      expect(inputs).toEqual(before);
+    }
+  });
+});
+
 describe("finding identities", () => {
   it("uses canonical repo, remediation unit, and the lexical minimum over the complete alias graph", () => {
     const input = finding({ repo: "Example/Service" });
