@@ -250,7 +250,8 @@ describe("immutable source journal", () => {
   it("rejects lossy lockfile strings before attempting any journal write", async () => {
     const lockfiles = sourceLockfiles();
     const file = lockfiles.files[0]!;
-    file.content = file.content.replace('{', '{"note":"\ud800",');
+    expect(file.content.startsWith("{")).toBe(true);
+    file.content = '{"note":"\ud800",' + file.content.slice(1);
     file.sha256 = sha256(file.content);
     file.blobSha = createHash("sha1").update(`blob ${Buffer.byteLength(file.content)}\0`).update(file.content).digest("hex");
     lockfiles.artifactDigest = `sha256:${sha256(canonicalJson([[file.path, file.sha256]]))}`;

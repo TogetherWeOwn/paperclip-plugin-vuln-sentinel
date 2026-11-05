@@ -44,8 +44,8 @@ const fetch: SourceFetch = async (url, init) => {
     ...sourceOsv().records[0]!.raw, aliases: ["CVE-2026-12345", "CVE-2026-56789"],
   }));
   if (url.includes("/vulns/CVE-")) return new Response(null, { status: 404 });
-  if (url.includes("www.cisa.gov/")) return new Response(JSON.stringify(rawKev()));
-  if (url.includes("api.first.org/")) {
+  if (new URL(url).hostname === "www.cisa.gov") return new Response(JSON.stringify(rawKev()));
+  if (new URL(url).hostname === "api.first.org") {
     const query = new URL(url);
     expect(query.searchParams.get("date")).toBe(options.epssDate);
     return new Response(JSON.stringify(epssResponse(query.searchParams.get("cve")!.split(",").map(cve => ({
@@ -103,7 +103,7 @@ describe("explicit repository scan to fenced local report projections", () => {
       threatSnapshotId: result.decisions.threatSnapshotId, sourceSelection: { token: selected.token } });
     expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
     expect(await count("card_claims")).toEqual([]);
-    expect(requests.some(url => url.includes("github.com"))).toBe(false);
+    expect(requests.some(url => ["github.com", "api.github.com"].includes(new URL(url).hostname))).toBe(false);
   });
 
   it("sequential/concurrent library scans retain one member/container without native claims", async () => {

@@ -117,7 +117,7 @@ function readNpm(content: string, add: Add, issues: Set<string>): number {
     }
     const tarball = new URL(row.resolved as string);
     if (!tarball.pathname.startsWith(`/${name}/-/`)
-      && !tarball.pathname.startsWith(`/${name.replace("/", "%2f")}/-/`)) {
+      && !tarball.pathname.startsWith(`/${name.replaceAll("/", "%2f")}/-/`)) {
       issues.add("npm_tarball_identity_mismatch");
       continue;
     }

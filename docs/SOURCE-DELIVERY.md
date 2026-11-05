@@ -124,10 +124,25 @@ Beyond the exact checkpoint, only these delivery corrections are included:
    it, and default-branch/nightly runs verify the full library. No deploy, source
    scan, package release, plugin job or runtime registration is introduced.
 
-The library, tests and migrations remain byte-identical to the checkpoint. Final
-Git head/tree, delta paths, actual commands/results, native reviews and required
-GitHub check evidence belong in the delivery record, pinned to the reviewed head.
-Historical **2,460 tests / 37 files** is not final-head verification until rerun.
+5. `.github/workflows/codeql.yml`: pinned JavaScript/TypeScript advanced analysis,
+   with no dependency installation or build, bounded permissions and timeouts,
+   draft skips and weekly coverage. It does not acquire vulnerability feeds.
+6. `src/inventory.ts`: replace all slashes when comparing the encoded npm tarball
+   path. The existing `npmName` validation admits at most one slash, so accepted
+   inputs and retained inventory/version identity are unchanged. `inventory.test.ts`
+   explicitly covers the already-supported encoded scoped name in npm v2 and v3.
+7. `src/repository-scan.test.ts`: exact parsed host matching for fake CISA/EPSS
+   responses and the no-GitHub-request assertion, rather than URL substrings.
+8. `src/source-journal.test.ts`: assert the fixture starts with an object opener,
+   then splice the intentional lone-surrogate field into that position. This is
+   malformed fixture construction, not a string sanitizer.
+
+These are finite delivery/CodeQL corrections, not new policy or capability.
+All other library/test source and all migrations remain byte-identical to the
+checkpoint. Final Git head/tree, delta paths, actual commands/results, native
+reviews and required GitHub Actions evidence belong in the delivery record,
+pinned to the reviewed head. Historical **2,460 tests / 37 files** is not
+final-head verification; the two encoded-tarball cases also need Actions evidence.
 
 ### Install-policy evidence and limits
 
@@ -146,11 +161,14 @@ dependencies, loosen security-update policy or enable scripts. Checksum-pinned
 workflow tools are downloaded into separate temporary directories, not installed as
 workspace dependencies.
 
-CodeQL is not silently treated as passed: the repository currently reports Code
-Security disabled and its default-setup API returns HTTP 403 requiring Code Security.
-No paid feature, repository setting, check waiver or security exception is enabled
-by this delivery. Applicable required-check disposition must be settled through the
-normal gates before merge. The inherited org standards workflow remains controlling.
+CodeQL is not silently treated as passed. The repository was separately made
+public after publication review, allowing free advanced analysis; empty-language
+default setup was separately disabled because it blocked advanced uploads.
+Neither setting transition is analysis coverage. Actual successful analysis,
+alert disposition and required checks must be verified on the delivery head
+before merge. No paid feature, check waiver or security exception is introduced.
+The inherited org standards workflow remains controlling. Full test suites,
+typecheck/build and security CI run on GitHub Actions, not on the shared host.
 
 ## Explicit exclusions and stopping condition
 

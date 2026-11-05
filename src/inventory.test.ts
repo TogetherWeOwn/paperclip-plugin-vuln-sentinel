@@ -266,6 +266,14 @@ describe("npm lockfile entries", () => {
     expect(result.dependencies.map(dep => `${dep.package}@${dep.version}`).sort()).toEqual(["@scope/lib@1.2.3", "lib@1.2.3", "lib@2.0.0", "real@1.2.3"]);
   });
 
+  it.each([2, 3])("preserves encoded scoped tarball identity in version %i", lockfileVersion => {
+    const result = parseNpm({ "node_modules/@scope/lib": {
+      ...npmRow("@scope/lib"), resolved: "https://registry.npmjs.org/@scope%2flib/-/lib-1.2.3.tgz",
+    } }, lockfileVersion);
+    expect(result.coverage.configuredPathsParsed).toBe(true);
+    expect(result.dependencies).toMatchObject([{ package: "@scope/lib", version: "1.2.3" }]);
+  });
+
   it("does not lower priority or infer scope from dev/optional/platform flags", () => {
     const result = parseNpm({ "node_modules/lib": { ...npmRow(), dev: true, optional: true, os: ["!linux"] } });
     expect(result.dependencies[0]!.scope).toBe("unknown");
