@@ -4,7 +4,7 @@ import type { PluginDatabaseClient } from "@paperclipai/plugin-sdk";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DATABASE_NAMESPACE } from "./claims.js";
 import { canonicalJson, sha256 } from "./identity.js";
-import { DecisionJournal } from "./journal.js";
+import { DecisionJournal, type StoredDecision } from "./journal.js";
 import { decide } from "./matcher.js";
 import { parseOsvRecord, type OsvSnapshot } from "./osv.js";
 import { ContainerPublication } from "./publication.js";
@@ -132,6 +132,75 @@ describe("retained source decision orchestration", () => {
     expect(stored.input_bundle.compatibleFixVerified).toBe(false);
     expect(stored.decision_bundle.priority).toBe(0);
     expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
+    expect(await records("card_claims")).toEqual([]);
+  });
+
+  it.each([
+    { change: "percentile", initialPriority: 3, revisedPriority: 3 },
+    { change: "model-reference", initialPriority: 3, revisedPriority: 3 },
+    { change: "probability", initialPriority: 3, revisedPriority: 1 },
+    { change: "KEV-membership", initialPriority: 3, revisedPriority: 0 },
+    { change: "missing-score", initialPriority: 1, revisedPriority: 3 },
+  ])("retains $change feed revisions with unchanged advisory/source evidence and replay-safe membership", async ({ change, initialPriority, revisedPriority }) => {
+    const e = await evidence(false, true);
+    const initialFeed = (await threats.read("company", e.threatId))!;
+    initialFeed.kev = parseKev({ ...initialFeed.kev.raw,
+      vulnerabilities: [{ cveID: "CVE-2026-99999", dateAdded: initialFeed.epss.date }] }, initialFeed.kev.fetchedAt);
+    const initialProbability = change === "missing-score" ? 0.04 : 0.039;
+    initialFeed.epss.scores[0]!.probability = initialProbability;
+    (initialFeed.epss.responses[0]!.data as Array<Record<string, unknown>>)[0]!.epss = String(initialProbability);
+    const { snapshotSha256: _, ...initialContent } = initialFeed.epss;
+    initialFeed.epss.snapshotSha256 = sha256(canonicalJson(initialContent));
+    e.threatId = await threats.record("company", initialFeed);
+    const originalFeed = structuredClone(initialFeed);
+    await observe(e);
+    const before = await routing.snapshot("company", configured.repo);
+    const originalDecision = (await new DecisionJournal(db).latest("company", before.members[0]!.currentOriginId))!;
+    expect(originalDecision.decision_bundle.priority).toBe(initialPriority);
+
+    const revised = structuredClone(initialFeed);
+    const rawScore = (revised.epss.responses[0]!.data as Array<Record<string, unknown>>)[0]!;
+    if (change === "percentile") rawScore.percentile = "0.01";
+    if (change === "model-reference") revised.epss.model.reference = "https://example.invalid/corrected-model-reference";
+    if (change === "probability") { rawScore.epss = "0.04"; revised.epss.scores[0]!.probability = 0.04; }
+    if (change === "KEV-membership") revised.kev = parseKev({ ...revised.kev.raw,
+      vulnerabilities: [{ cveID: "CVE-2026-12345", dateAdded: revised.epss.date }] }, revised.kev.fetchedAt);
+    if (change === "missing-score") {
+      revised.epss.responses[0]!.data = [];
+      revised.epss.responses[0]!.total = 0;
+      revised.epss.scores[0]!.probability = null;
+    }
+    const { snapshotSha256: __, ...revisedContent } = revised.epss;
+    revised.epss.snapshotSha256 = sha256(canonicalJson(revisedContent));
+    const threatId = await threats.record("company", revised);
+    expect(threatId).not.toBe(e.threatId);
+    const next = { ...e, threatId };
+    await Promise.all(Array.from({ length: 4 }, () => observe(next)));
+    const after = await routing.snapshot("company", configured.repo);
+    await observe(next);
+    expect(await routing.snapshot("company", configured.repo)).toEqual(after);
+    expect(after.members).toHaveLength(1);
+    expect(after.containers).toHaveLength(1);
+    expect(after.members[0]).toMatchObject({ findingId: before.members[0]!.findingId,
+      deliveryOrigin: before.members[0]!.deliveryOrigin, state: "unresolved" });
+
+    const decisions = (await postgres.query<StoredDecision>(`SELECT * FROM ${DATABASE_NAMESPACE}.decision_records`)).rows;
+    expect(decisions).toHaveLength(2);
+    const changed = decisions.find(row => row.input_bundle.provenance.threatSnapshotId === threatId)!;
+    expect(changed.input_sha256).not.toBe(originalDecision.input_sha256);
+    expect(changed.decision_id).not.toBe(originalDecision.decision_id);
+    expect(changed.input_bundle).toMatchObject({ scope: "unknown", fixedVersion: null, compatibleFixVerified: false,
+      provenance: { osvSnapshotId: e.scanId, threatSnapshotId: threatId,
+        sourceSelection: originalDecision.input_bundle.provenance.sourceSelection,
+        artifactDigest: originalDecision.input_bundle.provenance.artifactDigest,
+        epss: { snapshotSha256: revised.epss.snapshotSha256, probability: revised.epss.scores[0]!.probability },
+        kev: { snapshotSha256: revised.kev.snapshotSha256 } } });
+    expect(changed.decision_bundle).toMatchObject({ priority: revisedPriority, proposedVex: null, proposedRemediation: null,
+      identity: originalDecision.decision_bundle.identity, advisoryModified: originalDecision.decision_bundle.advisoryModified });
+    expect(decide(changed.input_bundle)).toEqual(changed.decision_bundle);
+    expect(await new DecisionJournal(db).read("company", originalDecision.origin_id, originalDecision.decision_id)).toEqual(originalDecision);
+    expect(await threats.read("company", e.threatId)).toEqual(originalFeed);
+    expect(await records("finding_records")).toHaveLength(1);
     expect(await records("card_claims")).toEqual([]);
   });
 

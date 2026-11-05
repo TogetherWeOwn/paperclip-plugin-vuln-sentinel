@@ -8,6 +8,7 @@ import { parseOsvRecord } from "./osv.js";
 import { DeliveryRouting } from "./routing.js";
 import { SourceJournal } from "./source-journal.js";
 import { ThreatJournal } from "./threat-journal.js";
+import type { ThreatSnapshot } from "./threat-feeds.js";
 import { testDatabase } from "./test/database.js";
 import { finding } from "./test/fixtures.js";
 import { sourceLockfiles, sourceOsv } from "./test/sources.js";
@@ -28,7 +29,81 @@ const input = () => {
   const value = finding(); value.provenance.observedAt = feedTime; return value;
 };
 
+function rehashFeeds(snapshot: ThreatSnapshot): void {
+  for (const feed of [snapshot.kev, snapshot.epss]) {
+    const { snapshotSha256: _, ...content } = feed;
+    feed.snapshotSha256 = sha256(canonicalJson(content));
+  }
+}
+
+const inconsistentFeeds: Array<{ name: string; change: (snapshot: ThreatSnapshot) => void; reason: string }> = [
+  { name: "omitted KEV alias", change: value => { value.kev.cves = []; }, reason: "kev_snapshot_mismatch" },
+  { name: "KEV catalog revision", change: value => { value.kev.catalogVersion = "different"; }, reason: "kev_snapshot_mismatch" },
+  { name: "KEV release time", change: value => { value.kev.releasedAt = "2026-11-03T11:00:00Z"; }, reason: "kev_snapshot_mismatch" },
+  { name: "lowered EPSS score", change: value => { value.epss.scores[0]!.probability = 0; }, reason: "epss_snapshot_mismatch" },
+  { name: "omitted EPSS score", change: value => { value.epss.scores = []; }, reason: "epss_snapshot_mismatch" },
+  { name: "EPSS score date", change: value => { value.epss.date = "2026-11-02"; }, reason: "epss_date_mismatch" },
+  { name: "changed raw EPSS score", change: value => {
+    (value.epss.responses[0]!.data as Array<Record<string, unknown>>)[0]!.epss = "0.9";
+  }, reason: "epss_snapshot_mismatch" },
+  { name: "extra EPSS query alias", change: value => { value.epss.requestedCves.push("CVE-2026-99999"); }, reason: "epss_snapshot_mismatch" },
+];
+
 describe("immutable company-scoped threat journal", () => {
+  it.each(inconsistentFeeds)("rejects rehashed $name disagreement before persistence", async ({ change, reason }) => {
+    const snapshot = await threatSnapshot();
+    change(snapshot);
+    rehashFeeds(snapshot);
+    await expect(journal.record("company", snapshot)).rejects.toThrow(reason);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.threat_snapshots`)).rows).toEqual([]);
+  });
+
+  it.each(inconsistentFeeds)("rejects stored rehashed $name disagreement before enrichment", async ({ change, reason }) => {
+    const snapshot = await threatSnapshot();
+    const original = await journal.record("company", snapshot);
+    change(snapshot);
+    rehashFeeds(snapshot);
+    const id = sha256(canonicalJson(["threat-snapshot-v1", snapshot]));
+    await postgres.query(`UPDATE ${DATABASE_NAMESPACE}.threat_snapshots SET snapshot_id = $1, bundle = $2 WHERE snapshot_id = $3`,
+      [id, canonicalJson(snapshot), original]);
+    await expect(journal.read("company", id)).rejects.toThrow(reason);
+    await expect(journal.enrich("company", id, [input()])).rejects.toThrow(reason);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.decision_records`)).rows).toEqual([]);
+    expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.delivery_routing`)).rows).toEqual([]);
+  });
+
+  it.each(["model-reference", "percentile", "catalog-metadata", "query-time"])(
+    "retains distinct %s provenance even when decision semantics stay equal", async change => {
+      const snapshot = await threatSnapshot();
+      const original = structuredClone(snapshot);
+      const first = await journal.record("company", snapshot);
+      const [before] = await journal.enrich("company", first, [input()]);
+      if (change === "model-reference") snapshot.epss.model.reference = "https://example.invalid/revised-model-evidence";
+      if (change === "percentile") (snapshot.epss.responses[0]!.data as Array<Record<string, unknown>>)[0]!.percentile = "0.5";
+      if (change === "catalog-metadata") snapshot.kev.raw.title = "Corrected fixture catalog title";
+      if (change === "query-time") snapshot.epss.queriedAt = "2026-11-04T04:29:59.000Z";
+      rehashFeeds(snapshot);
+      const ids = await Promise.all(Array.from({ length: 4 }, () => journal.record("company", snapshot)));
+      const second = ids[0]!;
+      expect(new Set(ids).size).toBe(1);
+      expect(second).not.toBe(first);
+      expect(await journal.record("company", snapshot)).toBe(second);
+      const [after] = await journal.enrich("company", second, [input()]);
+      const oldDecision = decide(before!);
+      const newDecision = decide(after!);
+      expect(newDecision.inputSha256).not.toBe(oldDecision.inputSha256);
+      expect(newDecision).toMatchObject({ identity: oldDecision.identity, priority: oldDecision.priority,
+        matchedRule: oldDecision.matchedRule, applicability: oldDecision.applicability,
+        proposedVex: oldDecision.proposedVex, proposedRemediation: oldDecision.proposedRemediation });
+      expect(after!.provenance.threatSnapshotId).toBe(second);
+      expect(after!.provenance.kev!.snapshotSha256).toBe(snapshot.kev.snapshotSha256);
+      expect(after!.provenance.epss!.snapshotSha256).toBe(snapshot.epss.snapshotSha256);
+      expect(await journal.read("company", first)).toEqual(original);
+      expect(await journal.read("company", second)).toEqual(snapshot);
+      expect((await postgres.query(`SELECT * FROM ${DATABASE_NAMESPACE}.threat_snapshots`)).rows).toHaveLength(2);
+    },
+  );
+
   it("persists raw feed/model/query coverage before returning enriched inputs", async () => {
     const snapshot = await threatSnapshot();
     const id = await journal.record("company", snapshot);
