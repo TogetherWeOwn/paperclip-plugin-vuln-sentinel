@@ -103,6 +103,55 @@ describe("conservative OSV severity enrichment", () => {
   });
 
   it.each([
+    { ecosystem: "npm", name: "Example" },
+    { ecosystem: "npm", name: "example-extra" },
+    { ecosystem: "npm", name: "@scope/example" },
+    { ecosystem: "npm", name: "example " },
+    { ecosystem: "NPM", name: dep.package },
+    { ecosystem: "PyPI", name: dep.package },
+  ])("does not import severity from a nonmatching package %#", pkg => {
+    for (const severity of [[score(critical)], null, { score: critical }]) {
+      const result = observeOsvSeverity({ severity: [score(low)], affected: [
+        { package: pkg, severity }, affected([score(moderate)]),
+      ] }, dep);
+      expect(result).toEqual({
+        version: OSV_SEVERITY_VERSION, severity: "moderate",
+        scores: [low, moderate].sort().map(vector => ({ vector, base: cvssV3Base(vector) })), attention: [],
+      });
+    }
+  });
+
+  it.each([
+    { severity: null, reason: "severity_capacity_or_shape" },
+    { severity: {}, reason: "severity_capacity_or_shape" },
+    { severity: [null], reason: "invalid_severity_entry" },
+    { severity: Array.from({ length: 101 }, () => score(high)), reason: "severity_capacity_or_shape" },
+  ])(
+    "does not ignore malformed exact-package severity %#", ({ severity, reason }) => {
+      expect(() => observeOsvSeverity({ severity: [score(high)], affected: [affected(severity)] }, dep))
+        .toThrow(reason);
+    },
+  );
+
+  it("keeps missing exact-package severity unknown despite unrelated critical evidence", () => {
+    const source = { affected: [affected(undefined), affected([score(critical)], "other")] };
+    expect(observeOsvSeverity(source, dep)).toEqual({
+      version: OSV_SEVERITY_VERSION, severity: "unknown", scores: [], attention: ["severity_not_observed"],
+    });
+  });
+
+  it.each([
+    [low, moderate, high], [low, high, moderate], [moderate, low, high],
+    [moderate, high, low], [high, low, moderate], [high, moderate, low],
+  ])("reduces repeated exact-package rows independently of ordering %#", (a, b, c) => {
+    const source = { severity: [score(a)], affected: [affected([score(b)]), affected([score(c), score(a)])] };
+    expect(observeOsvSeverity(source, dep)).toEqual({
+      version: OSV_SEVERITY_VERSION, severity: "high",
+      scores: [low, moderate, high].sort().map(vector => ({ vector, base: cvssV3Base(vector) })), attention: [],
+    });
+  });
+
+  it.each([
     [{}, "severity_not_observed"],
     [{ severity: [score(zero)] }, "zero_cvss_not_absence_evidence"],
     [{ severity: [score("9.8")] }, "invalid_cvss_v3_vector"],
@@ -168,6 +217,93 @@ describe("conservative OSV severity enrichment", () => {
     expect(input!.severity).toBe("high");
     expect(input!.versionEvidence.status).toBe("affected");
     expect(decide(input!).priority).toBe(2);
+  });
+
+  it.each([
+    { ecosystem: "npm", name: "Example" },
+    { ecosystem: "npm", name: "other" },
+    { ecosystem: "PyPI", name: dep.package },
+  ])("binds retained package-level severity to each exact query tuple %#", pkg => {
+    const source = {
+      ...raw("GHSA-example", low), severity: [], affected: [
+        { ...affected([score(moderate)]), versions: [dep.version] },
+        { package: pkg, versions: [dep.version], severity: [score(critical)] },
+      ],
+    };
+    const retained = snapshot([source]);
+    retained.observations.push({ dependency: { ecosystem: pkg.ecosystem as "npm" | "PyPI", package: pkg.name, version: dep.version },
+      advisoryIds: [source.id] });
+    const { snapshotSha256: _, ...content } = retained;
+    retained.snapshotSha256 = sha256(canonicalJson(content));
+    const before = canonicalJson(retained);
+    const inputs = osvFindingInputs(retained, context);
+    expect(inputs.map(input => input.severity)).toEqual(["moderate", "critical"]);
+    expect(inputs.map(input => input.versionEvidence.status)).toEqual(["affected", "affected"]);
+    for (const input of inputs) {
+      expect(input.provenance.source).toEqual({ kind: "osv", queriedAt: retained.queriedAt,
+        snapshotSha256: retained.snapshotSha256 });
+      expect(input.provenance.toolVersions["vuln-sentinel-osv-severity"]).toBe(OSV_SEVERITY_VERSION);
+      expect(input.scope).toBe("unknown");
+      expect(input.cvss4Base).toBeNull();
+      expect(input.compatibleFixVerified).toBe(false);
+      expect(decide(input).proposedVex).toBeNull();
+    }
+    expect(canonicalJson(retained)).toBe(before);
+    expect(osvFindingInputs(structuredClone(retained), context)).toEqual(inputs);
+  });
+
+  it.each([low, moderate, high, critical])(
+    "retains distinct source and decision hashes when severity changes without a modified change %#", vector => {
+      const original = snapshot([raw("GHSA-example", zero)]);
+      const revised = snapshot([raw("GHSA-example", vector)]);
+      const before = canonicalJson(original);
+      const [oldInput] = osvFindingInputs(original, context);
+      const [newInput] = osvFindingInputs(revised, context);
+      expect(oldInput!.versionEvidence.advisoryModified).toBe(newInput!.versionEvidence.advisoryModified);
+      expect(oldInput!.severity).toBe("unknown");
+      expect(newInput!.severity).toBe(observeOsvSeverity(revised.records[0]!.raw, dep).severity);
+      expect(original.records[0]!.rawSha256).not.toBe(revised.records[0]!.rawSha256);
+      expect(original.snapshotSha256).not.toBe(revised.snapshotSha256);
+      const previous = decide(oldInput!);
+      const next = decide(newInput!);
+      expect(previous.inputSha256).not.toBe(next.inputSha256);
+      expect(previous.identity).toEqual(next.identity);
+      expect(next.provenance).toEqual(newInput!.provenance);
+      expect(next.proposedVex).toBeNull();
+      expect(next.proposedRemediation).toBeNull();
+      expect(canonicalJson(original)).toBe(before);
+      expect(decide(osvFindingInputs(original, context)[0]!)).toEqual(previous);
+    },
+  );
+
+  it.each([
+    { severity: null, reason: "severity_capacity_or_shape" },
+    { severity: {}, reason: "severity_capacity_or_shape" },
+    { severity: [null], reason: "invalid_severity_entry" },
+    { severity: Array.from({ length: 101 }, () => score(high)), reason: "severity_capacity_or_shape" },
+  ])("holds retained normalization for malformed exact-package severity %#", ({ severity, reason }) => {
+    const source = { ...raw("GHSA-example", high), affected: [
+      { ...affected(severity), versions: [dep.version] },
+    ] };
+    const retained = snapshot([source]);
+    const before = canonicalJson(retained);
+    expect(() => osvFindingInputs(retained, context)).toThrow(reason);
+    expect(canonicalJson(retained)).toBe(before);
+  });
+
+  it("retains known severity and missing-alias attention without treating it as absence", () => {
+    const source = raw("GHSA-example", high, ["CVE-2026-1234"]);
+    const retained = snapshot([source]);
+    retained.unavailableIds = ["CVE-2026-1234"];
+    const { snapshotSha256: _, ...content } = retained;
+    retained.snapshotSha256 = sha256(canonicalJson(content));
+    const [input] = osvFindingInputs(retained, context);
+    expect(input!.severity).toBe("high");
+    expect(input!.provenance.severityAttention).toEqual(["severity_not_observed"]);
+    expect(input!.versionEvidence.status).toBe("affected");
+    expect(decide(input!).priority).toBe(2);
+    expect(decide(input!).proposedVex).toBeNull();
+    expect(decide(input!).proposedRemediation).toBeNull();
   });
 
   it("carries unsupported severity attention without inventing v4, scope or absence", () => {
