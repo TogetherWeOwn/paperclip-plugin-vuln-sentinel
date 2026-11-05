@@ -1,0 +1,30 @@
+{
+  "name": "@togetherweown/paperclip-plugin-vuln-sentinel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic report-only vulnerability triage for Paperclip",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "migrations", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
+    "check:host": "npm run build && node scripts/check-host-sql.mjs"
+  },
+  "dependencies": {
+    "semver": "7.7.4",
+    "smol-toml": "1.9.1",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.15",
+    "@paperclipai/plugin-sdk": "2026.1023.0",
+    "@types/node": "24.19.2",
+    "@types/semver": "7.7.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  }
+}

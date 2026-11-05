@@ -1,0 +1,801 @@
+import { describe, expect, it } from "vitest";
+import { decide } from "./matcher.js";
+import type { FindingInput } from "./model.js";
+import { canonicalJson, findingIdentity, sha256 } from "./identity.js";
+import { binding, closure, finding, goScan } from "./test/fixtures.js";
+import { aggregateFindingInputs } from "./version-set.js";
+
+function withEpss(probability: number | null): FindingInput {
+  const input = finding();
+  input.provenance.epss!.probability = probability;
+  return input;
+}
+
+function urgent(): FindingInput {
+  const input = finding({ scope: "development", functions: closure() });
+  input.provenance.kev!.aliases = ["CVE-2026-12345"];
+  return input;
+}
+
+describe("deterministic report-only rules", () => {
+  it("rule 0 records independent provenance and a reproducible input digest on every result", () => {
+    const input = finding();
+    const result = decide(input);
+    expect(result.provenance).toEqual(input.provenance);
+    expect(result.inputSha256).toBe(sha256(canonicalJson(input)));
+    expect(decide(structuredClone(input))).toEqual(result);
+    input.provenance.kev!.catalogVersion = "changed-after-decision";
+    expect(result.provenance.kev!.catalogVersion).toBe("2026.11.04");
+    expect(result.trace[0]).toBe(0);
+  });
+
+  it("rule 1 exclusion and withdrawal precede KEV, while uncertain exclusion does not", () => {
+    const outside = urgent();
+    outside.versionEvidence.status = "outside";
+    expect(decide(outside)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+    outside.versionEvidence.artifactDigest = "old";
+    expect(decide(outside)).toMatchObject({ matchedRule: 2, priority: 0 });
+    const withdrawn = urgent();
+    withdrawn.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(withdrawn).matchedRule).toBe(1);
+    withdrawn.aliases[0]!.withdrawn = "bad metadata";
+    withdrawn.provenance.kev!.aliases = [];
+    expect(decide(withdrawn)).toMatchObject({ matchedRule: 8, applicability: "unknown" });
+  });
+
+  describe("affected-range result discriminator", () => {
+    const unsupported = [undefined, null, "", " ", "AFFECTED", "no_hits", false, 0, {}];
+
+    describe.each(["platform", "go", "functions", "fix"] as const)("%s path", kind => {
+      it.each(unsupported)("missing/unsupported range status %j remains residual", status => {
+        const input = finding({ fixedVersion: "1.0.1", compatibleFixVerified: true });
+        if (kind === "platform") Object.assign(input, { ecosystem: "crates.io", platform: {
+          complete: true, tool: "rustsec", ...binding(),
+          buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"],
+        } });
+        if (kind === "go") Object.assign(input, { ecosystem: "Go", go: { ...goScan(), status: "package_only" } });
+        if (kind === "functions") input.functions = closure();
+        Object.assign(input.versionEvidence, { status });
+        const before = structuredClone(input);
+        const result = decide(input);
+        expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+        expect(result.reasons).toContain("Affected-range coverage unavailable or artifact mismatch");
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      });
+    });
+
+    it("a deleted range status cannot prove full-closure absence", () => {
+      const input = finding({ functions: closure() });
+      Reflect.deleteProperty(input.versionEvidence, "status");
+      expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown",
+        proposedVex: null, proposedRemediation: null });
+    });
+
+    it.each(["KEV", "MAL"])("unsupported range status cannot suppress %s P0", kind => {
+      for (const status of unsupported) {
+        const input = urgent();
+        Object.assign(input.versionEvidence, { status });
+        if (kind === "MAL") {
+          input.provenance.kev = null;
+          input.aliases[0]!.aliases.push("MAL-2026-1");
+        }
+        expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+          delivery: "immediate", proposedVex: null, proposedRemediation: null });
+      }
+    });
+
+    it("valid withdrawal still precedes unsupported range status", () => {
+      for (const status of unsupported) {
+        const input = urgent();
+        Object.assign(input.versionEvidence, { status });
+        input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+        expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+      }
+    });
+
+    it.each(["1.0.0", "2.0.0"])("unsupported tuple %s cannot disappear beside a proven outside tuple", version => {
+      const inputs = ["1.0.0", "2.0.0"].map(value => finding({ version: value, functions: closure() }));
+      for (const input of inputs) {
+        Object.assign(input.versionEvidence, { status: input.version === version ? "no_hits" : "outside" });
+      }
+      const input = aggregateFindingInputs(inputs)[0]!;
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions).toHaveLength(2);
+      expect(result.versionDecisions!.find(tuple => tuple.version === version)).toMatchObject({
+        applicability: "unknown", matchedRule: 8,
+      });
+      expect(decide(structuredClone(input))).toEqual(result);
+    });
+  });
+
+  it("stale range exclusion cannot drop a revised advisory", () => {
+    const input = finding();
+    input.versionEvidence.status = "outside";
+    input.aliases[0]!.modified = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding" });
+  });
+
+  it.each(["platform", "go", "functions"] as const)("stale %s proof cannot suppress a revised advisory", kind => {
+    const input = finding({ functions: closure() });
+    if (kind === "platform") Object.assign(input, { ecosystem: "crates.io", platform: {
+      complete: true, tool: "rustsec", ...binding(), buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"],
+    } });
+    if (kind === "go") Object.assign(input, { ecosystem: "Go", go: { ...goScan(), status: "package_only" } });
+    input.aliases[0]!.modified = "2026-11-03T00:00:00Z";
+    input.versionEvidence.advisoryModified = input.aliases[0]!.modified;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", proposedVex: null });
+  });
+
+  it("rule 2 traverses aliases/upstream and cannot be lowered or weekly batched", () => {
+    const input = urgent();
+    input.aliases.push({ id: "CVE-2026-12345", upstream: ["MAL-2026-1"], aliases: [], modified: null, withdrawn: null });
+    input.provenance.kev = null;
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0, delivery: "immediate", slaDays: 1, proposedVex: null });
+    expect(decide(urgent()).priority).toBe(0);
+  });
+
+  it("rule 3 proposes expiring all-alias VEX only for complete RustSec target exclusion", () => {
+    const input = finding({ ecosystem: "crates.io", platform: {
+      complete: true, tool: "rustsec", ...binding(),
+      buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"],
+    } });
+    expect(decide(input)).toMatchObject({ matchedRule: 3, delivery: "none", applicability: "not_affected", proposedVex: {
+      aliases: ["CVE-2026-12345", "GHSA-example"], expiresAt: "2027-02-02T04:30:00.000Z",
+      artifactDigest: "sha256:artifact", justification: "vulnerable_code_not_present",
+    } });
+    for (const patch of [{ complete: false }, { artifactDigest: "old" }, { buildTargets: [] }, { tool: "unversioned" }]) {
+      expect(decide({ ...input, platform: { ...input.platform!, ...patch } })).toMatchObject({ applicability: "unknown", matchedRule: 8, proposedVex: null });
+    }
+    input.buildTargets.push("darwin/arm64");
+    expect(decide(input).applicability).toBe("unknown");
+  });
+
+  it.each(["package_only", "module_only"] as const)("rule 4 complete Go %s evidence proposes execute-path VEX", status => {
+    expect(decide(finding({ ecosystem: "Go", go: { ...goScan(), status } }))).toMatchObject({
+      matchedRule: 4, applicability: "not_affected", proposedVex: { justification: "vulnerable_code_not_in_execute_path" },
+    });
+  });
+
+  it.each([undefined, null, "", " ", "no_hits", "SYMBOL_HIT", false, 0, {}])(
+    "rule 4 missing/unsupported Go status %j cannot prove symbol absence or propose a fix", status => {
+      const input = finding({ ecosystem: "Go", go: goScan(), functions: closure(),
+        fixedVersion: "1.0.1", compatibleFixVerified: true });
+      Object.assign(input.go!, { status });
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["symbol_hit", "package_only", "module_only"] as const)(
+    "rule 4 %s requires explicit reflect/unsafe evidence", status => {
+      for (const reflectOrUnsafe of [undefined, null, "", "false", 0]) {
+        const input = finding({ ecosystem: "Go", go: { ...goScan(), status }, functions: closure(),
+          fixedVersion: "1.0.1", compatibleFixVerified: true });
+        Object.assign(input.go!, { reflectOrUnsafe });
+        expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+      }
+    },
+  );
+
+  it.each(["KEV", "MAL"])("incomplete Go result indicators cannot suppress %s P0", kind => {
+    const input = urgent();
+    Object.assign(input, { ecosystem: "Go", go: goScan() });
+    Reflect.deleteProperty(input.go!, "status");
+    Reflect.deleteProperty(input.go!, "reflectOrUnsafe");
+    if (kind === "MAL") {
+      input.provenance.kev = null;
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["outside", "withdrawn"])("rule 1 %s still precedes incomplete Go results", kind => {
+    const input = finding({ ecosystem: "Go", go: goScan() });
+    Reflect.deleteProperty(input.go!, "status");
+    Reflect.deleteProperty(input.go!, "reflectOrUnsafe");
+    if (kind === "outside") input.versionEvidence.status = "outside";
+    else input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
+  it("rule 4 symbol hit jumps over contradictory function absence to remediation", () => {
+    const result = decide(finding({ ecosystem: "Go", go: goScan(), functions: closure(), fixedVersion: "1.0.1", compatibleFixVerified: true }));
+    expect(result).toMatchObject({ matchedRule: 6, applicability: "affected", proposedVex: null });
+    expect(result.trace).toEqual([0, 4, 6, 7]);
+  });
+
+  it.each([
+    { complete: false }, { targets: ["darwin/arm64"] }, { tags: ["different"] },
+    { reflectOrUnsafe: true }, { status: "failed" as const }, { artifactDigest: "old" },
+  ])("rule 4 incomplete/mismatched/reflect Go evidence goes directly to residual: %j", patch => {
+    expect(decide(finding({ ecosystem: "Go", go: { ...goScan(), ...patch }, fixedVersion: "1.0.1", compatibleFixVerified: true })))
+      .toMatchObject({ matchedRule: 8, applicability: "unknown", proposedRemediation: null, proposedVex: null });
+  });
+
+  it("rule 5 distinguishes full-closure absence, own hits, and dependency hits", () => {
+    const input = finding({ functions: closure(), fixedVersion: "1.0.1", compatibleFixVerified: true });
+    expect(decide(input)).toMatchObject({ matchedRule: 5, applicability: "not_affected", proposedRemediation: null });
+    input.functions!.ownHits = 1;
+    expect(decide(input)).toMatchObject({ matchedRule: 6, applicability: "affected" });
+    input.functions!.dependencyHits = 1;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", proposedRemediation: null });
+    input.compatibleFixVerified = false;
+    input.functions!.dependencyHits = 0;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "affected" });
+  });
+
+  it.each([
+    { fullDependencyClosure: false }, { allSourcesAvailable: false }, { confirmedInAdvisory: false },
+    { complete: false }, { artifactDigest: "old" }, { ownHits: -1 }, { dependencyHits: 0.5 },
+  ])("rule 5 missing evidence never proves not affected: %j", patch => {
+    expect(decide(finding({ functions: { ...closure(), ...patch } }))).toMatchObject({
+      matchedRule: 8, applicability: "unknown", proposedVex: null,
+    });
+  });
+
+  it("rule 6 no-function-data still permits a compatible fix but does not invent reachability", () => {
+    expect(decide(finding({ fixedVersion: "1.0.1", compatibleFixVerified: true, direct: false }))).toMatchObject({
+      matchedRule: 6, applicability: "unknown", proposedRemediation: { kind: "grouped_dependabot_security_pr" },
+    });
+  });
+
+  it.each([
+    ["crates.io", "example-package", "cargo update -p example-package --precise 1.0.1"],
+    ["Go", "example.org/module", "go get example.org/module@1.0.1"],
+    ["PyPI", "example-package", "uv lock --upgrade-package example-package"],
+  ] as const)("rule 6 %s transitive proposal has an exact command", (ecosystem, pkg, command) => {
+    const result = decide(finding({ ecosystem, package: pkg, direct: false, fixedVersion: "1.0.1", compatibleFixVerified: true,
+      go: ecosystem === "Go" ? goScan() : null }));
+    expect(result.proposedRemediation).toEqual({ kind: "command", command, package: pkg, fixedVersion: "1.0.1" });
+  });
+
+  describe("rule 6 explicit dependency relationship", () => {
+    const unsupported = [undefined, null, "", "false", "true", 0, 1, [], {}];
+    const ecosystems = ["crates.io", "Go", "PyPI"] as const;
+    const candidate = (ecosystem: FindingInput["ecosystem"]) => finding({ ecosystem,
+      fixedVersion: "1.0.1", compatibleFixVerified: true, go: ecosystem === "Go" ? goScan() : null });
+
+    describe.each(ecosystems)("%s routing", ecosystem => {
+      it.each(unsupported.map(direct => ({ direct })))("holds fix routing for unsupported direct evidence $direct", ({ direct }) => {
+        for (const ownHits of [null, 1]) {
+          const input = candidate(ecosystem);
+          if (ownHits !== null) input.functions = { ...closure(), ownHits };
+          Object.assign(input, { direct });
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ matchedRule: 8, delivery: "finding", proposedVex: null,
+            proposedRemediation: null, applicability: ecosystem === "Go" || ownHits === 1 ? "affected" : "unknown" });
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      });
+
+      it.each([true, false])("preserves explicit direct=%s routing", direct => {
+        const input = candidate(ecosystem);
+        input.direct = direct;
+        expect(decide(input)).toMatchObject({ matchedRule: 6, proposedVex: null,
+          proposedRemediation: { kind: direct ? "grouped_dependabot_security_pr" : "command" } });
+      });
+    });
+
+    it("npm routing does not need a direct/transitive distinction", () => {
+      for (const direct of [...unsupported, true, false]) {
+        const input = candidate("npm");
+        Object.assign(input, { direct });
+        expect(decide(input)).toMatchObject({ matchedRule: 6, applicability: "unknown",
+          proposedRemediation: { kind: "grouped_dependabot_security_pr" } });
+      }
+    });
+
+    it.each(["KEV", "MAL"])("unknown direct evidence cannot alter %s P0", kind => {
+      const input = candidate("crates.io");
+      Object.assign(input, { direct: "false" });
+      if (kind === "MAL") input.aliases[0]!.aliases.push("MAL-2026-1");
+      else input.provenance.kev!.aliases = ["CVE-2026-12345"];
+      expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+        delivery: "immediate", proposedVex: null, proposedRemediation: null });
+    });
+
+    it("relationship uncertainty does not invalidate earlier independent negative proof", () => {
+      const input = candidate("crates.io");
+      Object.assign(input, { direct: null });
+      input.versionEvidence.status = "outside";
+      expect(decide(input)).toMatchObject({ matchedRule: 1, delivery: "none", proposedRemediation: null });
+      input.versionEvidence.status = "affected";
+      input.functions = closure();
+      expect(decide(input)).toMatchObject({ matchedRule: 5, applicability: "not_affected", delivery: "none",
+        proposedVex: { justification: "vulnerable_code_not_present" }, proposedRemediation: null });
+    });
+
+    it.each(ecosystems)("all-version %s action cannot guess a relationship", ecosystem => {
+      const first = candidate(ecosystem);
+      Object.assign(first, { direct: "false" });
+      const second = structuredClone(first);
+      second.version = "2.0.0";
+      const input = aggregateFindingInputs([second, first])[0]!;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, delivery: "finding", proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions).toHaveLength(2);
+      expect(result.versionDecisions!.every(decision => decision.matchedRule === 8)).toBe(true);
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    });
+  });
+
+  it("rule 6 does not propose executable advisory interpolation", () => {
+    expect(decide(finding({ package: "pkg;command", fixedVersion: "1.0.1", compatibleFixVerified: true })).proposedRemediation).toBeNull();
+    expect(decide(finding({ fixedVersion: "1.0.1;command", compatibleFixVerified: true })).proposedRemediation).toBeNull();
+  });
+
+  it.each([
+    ["runtime", 1, "finding"], ["mixed", 1, "finding"], ["unknown", 1, "finding"], ["development", 2, "weekly"],
+  ] as const)("rule 7 post-pass applies once after fix routing for %s scope", (scope, priority, delivery) => {
+    const input = withEpss(0.04);
+    Object.assign(input, { scope, fixedVersion: "1.0.1", compatibleFixVerified: true });
+    expect(decide(input)).toMatchObject({ matchedRule: 6, priority, delivery });
+    expect(decide(input).trace.filter(rule => rule === 7)).toHaveLength(1);
+  });
+
+  it("rule 7 saturates at P3; low runtime and all dev delivery batch weekly", () => {
+    expect(decide(finding({ scope: "development" }))).toMatchObject({ priority: 3, delivery: "weekly", slaDays: 90 });
+    expect(decide(finding({ scope: "development", severity: "low" })).priority).toBe(3);
+    expect(decide(finding({ severity: "low" }))).toMatchObject({ priority: 3, delivery: "weekly" });
+  });
+
+  it("rule 8 records unknown and no negative/remediation effect when evidence is missing", () => {
+    expect(decide(finding())).toMatchObject({ matchedRule: 8, applicability: "unknown", priority: 2, slaDays: 30 });
+    const input = finding({ functions: closure() });
+    input.provenance.kev = null;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", proposedVex: null });
+    input.provenance.observedAt = "invalid";
+    expect(decide(input).applicability).toBe("unknown");
+    input.aliases = [];
+    expect(decide(input).applicability).toBe("unknown");
+  });
+
+  it.each([null, NaN, -0.01, 1.1])("missing/invalid EPSS %s uses severity, not percentile", probability => {
+    const input = withEpss(probability);
+    expect(decide(input).priority).toBe(2);
+    expect(decide(input).reasons[0]).toContain("severity fallback");
+  });
+
+  it("priority thresholds use EPSS probability and runtime Critical, then CVSS4/High", () => {
+    expect(decide(withEpss(0.03999)).priority).toBe(2);
+    expect(decide(withEpss(0.04)).priority).toBe(1);
+    expect(decide(finding({ severity: "critical" })).priority).toBe(1);
+    expect(decide(finding({ severity: "critical", scope: "mixed" })).priority).toBe(1);
+    expect(decide(finding({ severity: "unknown", cvss4Base: 7 })).priority).toBe(2);
+    expect(decide(finding({ severity: "unknown", cvss4Base: 10.1 })).priority).toBe(3);
+  });
+});
+
+const negativeProofs = [
+  { name: "range exclusion", rule: 1, create: () => {
+    const input = finding();
+    input.versionEvidence.status = "outside";
+    return { input, evidence: input.versionEvidence };
+  } },
+  { name: "RustSec target exclusion", rule: 3, create: () => {
+    const platform = { ...binding(), complete: true, tool: "rustsec",
+      buildTargets: ["linux/amd64"], excludedTargets: ["linux/amd64"] };
+    return { input: finding({ ecosystem: "crates.io", platform }), evidence: platform };
+  } },
+  { name: "Go symbol absence", rule: 4, create: () => {
+    const go = { ...goScan(), status: "package_only" as const };
+    return { input: finding({ ecosystem: "Go", go }), evidence: go };
+  } },
+  { name: "full-closure function absence", rule: 5, create: () => {
+    const functions = closure();
+    return { input: finding({ functions }), evidence: functions };
+  } },
+];
+
+describe("explicit evidence completeness", () => {
+  const unsupportedFlags = [undefined, null, false, 0, "false", "true", 1, [], {}];
+
+  it.each(negativeProofs)("requires complete: true for $name", ({ create }) => {
+    for (const complete of unsupportedFlags) {
+      const { input, evidence } = create();
+      Object.assign(evidence, { complete });
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    }
+  });
+
+  it("requires explicit affected-range completeness before later negative or fix proposals", () => {
+    const input = finding({ functions: closure(), fixedVersion: "1.0.1", compatibleFixVerified: true });
+    Object.assign(input.versionEvidence, { complete: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+      proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["confirmedInAdvisory", "fullDependencyClosure", "allSourcesAvailable"] as const)(
+    "requires explicit %s: true before function absence or remediation", field => {
+      for (const value of unsupportedFlags) {
+        for (const ownHits of [0, 1]) {
+          const input = finding({ functions: { ...closure(), ownHits },
+            fixedVersion: "1.0.1", compatibleFixVerified: true });
+          Object.assign(input.functions!, { [field]: value });
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+            proposedVex: null, proposedRemediation: null });
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      }
+    },
+  );
+
+  it.each(["npm", "crates.io", "Go", "PyPI"] as const)(
+    "requires explicit compatibleFixVerified: true before %s fix proposals", ecosystem => {
+      for (const compatibleFixVerified of unsupportedFlags) {
+        const input = finding({ ecosystem, direct: false, fixedVersion: "1.0.1",
+          go: ecosystem === "Go" ? goScan() : null });
+        Object.assign(input, { compatibleFixVerified });
+        const before = structuredClone(input);
+        const result = decide(input);
+        expect(result).toMatchObject({ matchedRule: 8, delivery: "finding",
+          proposedVex: null, proposedRemediation: null });
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      }
+    },
+  );
+
+  it.each(["KEV", "MAL"])("truthy nonboolean range completeness cannot suppress %s P0", kind => {
+    const input = urgent();
+    input.versionEvidence.status = "outside";
+    Object.assign(input.versionEvidence, { complete: "false" });
+    if (kind === "MAL") {
+      input.provenance.kev = null;
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it("preserves advisory withdrawal precedence over malformed completeness", () => {
+    const input = urgent();
+    input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    Object.assign(input.versionEvidence, { complete: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
+  it("keeps complete range exclusion ahead of incomplete later function evidence", () => {
+    const input = finding({ functions: closure() });
+    input.versionEvidence.status = "outside";
+    Object.assign(input.functions!, { fullDependencyClosure: "false" });
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+});
+
+describe("negative proof tool-version coverage", () => {
+  it.each(negativeProofs)("keeps complete, versioned $name evidence eligible", ({ create, rule }) => {
+    expect(decide(create().input)).toMatchObject({ matchedRule: rule, delivery: "none" });
+  });
+
+  it.each(negativeProofs.flatMap(proof => [undefined, "", " ", "\t\n"].map(version => ({ ...proof, version }))))(
+    "holds $name with missing/blank tool version $version before negative or fix proposals", ({ create, version }) => {
+      const { input, evidence } = create();
+      if (version === undefined) delete input.provenance.toolVersions[evidence.tool];
+      else input.provenance.toolVersions[evidence.tool] = version;
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["toString", "constructor", "__proto__"].flatMap(tool => ["range", "functions"].map(kind => ({ tool, kind }))))(
+    "does not mistake inherited $tool for a recorded $kind tool version", ({ tool, kind }) => {
+      const { input, evidence } = negativeProofs[kind === "range" ? 0 : 3]!.create();
+      evidence.tool = tool;
+      input.provenance.toolVersions = kind === "functions" ? { "osv-range": "fixture-1" } : {};
+      expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null });
+    },
+  );
+
+  it.each(["toString", "constructor", "__proto__"].flatMap(tool => ["range", "functions"].map(kind => ({ tool, kind }))))(
+    "keeps an explicit own $tool version as ordinary $kind provenance", ({ tool, kind }) => {
+      const proof = negativeProofs[kind === "range" ? 0 : 3]!;
+      const { input, evidence } = proof.create();
+      evidence.tool = tool;
+      input.provenance.toolVersions = { [tool]: "fixture-1" };
+      // Function absence still depends on the separately versioned affected-range proof.
+      if (kind === "functions") input.provenance.toolVersions["osv-range"] = "fixture-1";
+      expect(decide(input)).toMatchObject({ matchedRule: proof.rule, delivery: "none" });
+    },
+  );
+
+  it.each(["KEV", "MAL"])("missing range-tool provenance cannot suppress %s P0", kind => {
+    const input = urgent();
+    input.versionEvidence.status = "outside";
+    input.versionEvidence.tool = "toString";
+    input.provenance.toolVersions = {};
+    if (kind === "MAL") {
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+      input.provenance.kev = null;
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+});
+
+describe("artifact digest provenance coverage", () => {
+  it.each(negativeProofs.flatMap(proof => ["", " ", "\t\n"].map(digest => ({ ...proof, digest }))))(
+    "holds $name when matching artifact digests are blank $digest", ({ create, digest }) => {
+      const { input, evidence } = create();
+      input.provenance.artifactDigest = digest;
+      input.versionEvidence.artifactDigest = digest;
+      evidence.artifactDigest = digest;
+      input.fixedVersion = "1.0.1";
+      input.compatibleFixVerified = true;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["KEV", "MAL"].flatMap(kind => ["", " ", "\t\n"].map(digest => ({ kind, digest }))))(
+    "does not let matching blank artifact digests $digest suppress $kind P0", ({ kind, digest }) => {
+      const input = urgent();
+      input.provenance.artifactDigest = digest;
+      input.versionEvidence.artifactDigest = digest;
+      input.versionEvidence.status = "outside";
+      if (kind === "MAL") {
+        input.provenance.kev = null;
+        input.aliases[0]!.aliases.push("MAL-2026-1");
+      }
+      expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+        delivery: "immediate", proposedVex: null, proposedRemediation: null });
+    },
+  );
+
+  it.each(negativeProofs)("keeps matching nonblank opaque digests eligible for $name", ({ create, rule }) => {
+    const { input, evidence } = create();
+    input.provenance.artifactDigest = "opaque-artifact-fixture";
+    input.versionEvidence.artifactDigest = input.provenance.artifactDigest;
+    evidence.artifactDigest = input.provenance.artifactDigest;
+    expect(decide(input)).toMatchObject({ matchedRule: rule, delivery: "none" });
+  });
+
+  it("preserves advisory withdrawal precedence without artifact evidence", () => {
+    const input = urgent();
+    input.provenance.artifactDigest = " ";
+    input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+});
+
+describe("feed-version provenance coverage", () => {
+  it.each(negativeProofs.slice(1).flatMap(proof => ["", " ", "\t\n"].map(version => ({ ...proof, version }))))(
+    "holds $name when the KEV catalog version is blank $version", ({ create, version }) => {
+      const { input } = create();
+      input.provenance.kev!.catalogVersion = version;
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ matchedRule: 8, applicability: "unknown", delivery: "finding",
+        proposedVex: null, proposedRemediation: null, provenance: before.provenance });
+      expect(result.reasons).toContain("KEV coverage unavailable");
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(["", " ", "\t\n"])("holds compatible-fix proposals without a KEV catalog version %j", version => {
+    const input = finding({ fixedVersion: "1.0.1", compatibleFixVerified: true });
+    input.provenance.kev!.catalogVersion = version;
+    expect(decide(input)).toMatchObject({ matchedRule: 8, applicability: "unknown", proposedRemediation: null });
+  });
+
+  it.each(["date", "modelVersion"] as const)("uses severity fallback when EPSS %s is whitespace only", field => {
+    const input = withEpss(0.5);
+    for (const value of ["", " ", "\t\n"]) {
+      input.provenance.epss![field] = value;
+      const result = decide(input);
+      expect(result).toMatchObject({ priority: 2, slaDays: 30, delivery: "finding" });
+      expect(result.reasons).toContain("EPSS unavailable or invalid; severity fallback");
+      expect(result.provenance.epss![field]).toBe(value);
+    }
+  });
+
+  it.each(["KEV", "MAL"])("does not let blank feed metadata suppress %s P0", kind => {
+    const input = urgent();
+    input.provenance.kev!.catalogVersion = "\t ";
+    input.provenance.epss!.date = " ";
+    input.provenance.epss!.modelVersion = " ";
+    if (kind === "MAL") {
+      input.provenance.kev!.aliases = [];
+      input.aliases[0]!.aliases.push("MAL-2026-1");
+    }
+    expect(decide(input)).toMatchObject({ matchedRule: 2, applicability: "affected", priority: 0,
+      delivery: "immediate", proposedVex: null, proposedRemediation: null });
+  });
+
+  it.each(["outside", "withdrawn"])("preserves rule-1 %s precedence with unavailable feeds", kind => {
+    const input = urgent();
+    input.provenance.kev!.catalogVersion = " ";
+    if (kind === "outside") input.versionEvidence.status = "outside";
+    else input.aliases[0]!.withdrawn = "2026-11-03T00:00:00Z";
+    expect(decide(input)).toMatchObject({ matchedRule: 1, applicability: "dropped", delivery: "none" });
+  });
+
+  it("keeps recorded, nonblank opaque feed versions eligible", () => {
+    const input = withEpss(0.5);
+    input.provenance.epss!.modelVersion = "fixture-model-version";
+    input.provenance.kev!.catalogVersion = "fixture-catalog-version";
+    expect(decide(input)).toMatchObject({ priority: 1, slaDays: 7 });
+    input.functions = closure();
+    expect(decide(input)).toMatchObject({ matchedRule: 5, applicability: "not_affected" });
+  });
+});
+
+describe("scope and priority boundaries", () => {
+  const severities = ["critical", "high", "moderate", "low", "unknown"] as const;
+  const profiles = [
+    { scope: "runtime", fallback: [1, 2, 3, 3, 3], cvss: [1, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "mixed", fallback: [1, 2, 3, 3, 3], cvss: [1, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "unknown", fallback: [3, 2, 3, 3, 3], cvss: [2, 2, 2, 2, 2], epss: [1, 1, 1, 1, 1] },
+    { scope: "development", fallback: [3, 3, 3, 3, 3], cvss: [3, 3, 3, 3, 3], epss: [2, 2, 2, 2, 2] },
+  ] as const;
+  const scores = [
+    { probability: 0, cvss4Base: null, column: "fallback" },
+    { probability: 0.039999, cvss4Base: null, column: "fallback" },
+    { probability: 0.04, cvss4Base: null, column: "epss" },
+    { probability: 1, cvss4Base: null, column: "epss" },
+    { probability: null, cvss4Base: null, column: "fallback" },
+    { probability: NaN, cvss4Base: null, column: "fallback" },
+    { probability: -0.1, cvss4Base: null, column: "fallback" },
+    { probability: 1.1, cvss4Base: null, column: "fallback" },
+    { probability: "0.9", cvss4Base: null, column: "fallback" },
+    { probability: null, cvss4Base: 6.999, column: "fallback" },
+    { probability: null, cvss4Base: 7, column: "cvss" },
+    { probability: null, cvss4Base: 10, column: "cvss" },
+    { probability: null, cvss4Base: 10.001, column: "fallback" },
+    { probability: null, cvss4Base: NaN, column: "fallback" },
+    { probability: null, cvss4Base: Infinity, column: "fallback" },
+    { probability: null, cvss4Base: "9.0", column: "fallback" },
+  ] as const;
+
+  it.each(profiles.flatMap(profile => severities.map((severity, index) => ({ ...profile, severity, index }))))(
+    "$scope/$severity follows the priority table across score boundaries and actionable rule paths",
+    profile => {
+      for (const score of scores) {
+        const priority = profile[score.column][profile.index]!;
+        for (const path of ["residual", "fix", "own_function_hit"] as const) {
+          const input = finding({ scope: profile.scope, severity: profile.severity });
+          Object.assign(input.provenance.epss!, { probability: score.probability });
+          Object.assign(input, { cvss4Base: score.cvss4Base });
+          if (path === "fix") Object.assign(input, { fixedVersion: "1.0.1", compatibleFixVerified: true });
+          if (path === "own_function_hit") input.functions = { ...closure(), ownHits: 1 };
+          const before = structuredClone(input);
+          const result = decide(input);
+          expect(result).toMatchObject({ priority, slaDays: [1, 7, 30, 90][priority],
+            delivery: profile.scope === "development" || priority === 3 ? "weekly" : "finding",
+            matchedRule: path === "fix" ? 6 : 8,
+            applicability: path === "own_function_hit" ? "affected" : "unknown", proposedVex: null });
+          expect(result.trace.filter(rule => rule === 7)).toHaveLength(1);
+          expect(result.proposedRemediation !== null).toBe(path === "fix");
+          expect(input).toEqual(before);
+          expect(decide(structuredClone(input))).toEqual(result);
+        }
+      }
+    },
+  );
+
+  it.each([undefined, null, "", "Development", "development ", "dev", true, 1, ["development"], { scope: "development" }]
+    .map(scope => ({ scope })))("unsupported scope $scope never becomes proven dev-only", ({ scope }) => {
+    for (const severity of severities) {
+      for (const probability of [null, 0.04]) {
+        const input = finding({ severity });
+        Object.assign(input, { scope });
+        input.provenance.epss!.probability = probability;
+        const before = structuredClone(input);
+        const expected = decide({ ...input, scope: "unknown" });
+        const result = decide(input);
+        expect(result).toMatchObject({ priority: expected.priority, slaDays: expected.slaDays,
+          delivery: expected.delivery, applicability: "unknown", matchedRule: 8,
+          proposedVex: null, proposedRemediation: null });
+        expect(input).toEqual(before);
+        expect(decide(structuredClone(input))).toEqual(result);
+      }
+    }
+  });
+
+  it.each(profiles.flatMap(({ scope }) => ["MAL", "KEV"].map(kind => ({ scope, kind }))))(
+    "$scope cannot downgrade or batch $kind when scores are invalid",
+    ({ scope, kind }) => {
+      const input = finding({ scope, severity: "unknown", cvss4Base: NaN,
+        fixedVersion: "1.0.1", compatibleFixVerified: true, functions: closure() });
+      input.provenance.epss!.probability = NaN;
+      if (kind === "MAL") input.aliases[0]!.aliases.push("MAL-2026-1");
+      else input.provenance.kev!.aliases.push("CVE-2026-12345");
+      const before = structuredClone(input);
+      const result = decide(input);
+      expect(result).toMatchObject({ applicability: "affected", matchedRule: 2, priority: 0,
+        slaDays: 1, delivery: "immediate", trace: [0, 2], proposedVex: null, proposedRemediation: null });
+      expect(input).toEqual(before);
+      expect(decide(structuredClone(input))).toEqual(result);
+    },
+  );
+
+  it.each(profiles)("$scope priority survives all-version reduction beside outside and unknown tuples", profile => {
+    for (const probability of [null, 0.04]) {
+      const active = finding({ scope: profile.scope, functions: { ...closure(), ownHits: 1 } });
+      active.provenance.epss!.probability = probability;
+      const outside = structuredClone(active);
+      outside.version = "2.0.0";
+      outside.versionEvidence.status = "outside";
+      const unknown = structuredClone(active);
+      unknown.version = "3.0.0";
+      unknown.versionEvidence.status = "unknown";
+      const inputs = [unknown, outside, active];
+      const before = structuredClone(inputs);
+      const expected = decide(active);
+      const result = decide(aggregateFindingInputs(inputs)[0]!);
+      expect(result).toMatchObject({ priority: expected.priority, slaDays: expected.slaDays,
+        delivery: expected.delivery, applicability: "affected", matchedRule: 8,
+        proposedVex: null, proposedRemediation: null });
+      expect(result.versionDecisions!.map(tuple => tuple.applicability)).toEqual(["affected", "dropped", "unknown"]);
+      expect(decide(aggregateFindingInputs([...inputs].reverse())[0]!)).toEqual(result);
+      expect(inputs).toEqual(before);
+    }
+  });
+});
+
+describe("finding identities", () => {
+  it("uses canonical repo, remediation unit, and the lexical minimum over the complete alias graph", () => {
+    const input = finding({ repo: "Example/Service" });
+    input.aliases.push({ id: "GHSA-other", aliases: ["CVE-2026-12345", "CVE-2025-10000"], upstream: ["GO-2025-1"], modified: null, withdrawn: null });
+    const identity = findingIdentity(input);
+    expect(identity).toMatchObject({ repo: "example/service", aliasGroup: "CVE-2025-10000", remediationUnit: "npm:example-package@unfixed" });
+    expect(identity.aliases).toEqual(["CVE-2025-10000", "CVE-2026-12345", "GHSA-example", "GHSA-other", "GO-2025-1"]);
+    expect(identity.originId).toBe(sha256(`${identity.repo}|${identity.remediationUnit}|${identity.aliasGroup}`));
+    input.aliases.reverse();
+    expect(findingIdentity(input)).toEqual(identity);
+  });
+
+  it("modified time, artifact and EPSS do not mutate identity, but fix target and alias minimum do", () => {
+    const input = finding();
+    const identity = findingIdentity(input);
+    input.aliases[0]!.modified = "2026-11-04T00:00:00Z";
+    input.provenance.artifactDigest = "new artifact";
+    input.provenance.epss!.date = "2026-11-05";
+    expect(findingIdentity(input)).toEqual(identity);
+    input.fixedVersion = "1.0.1";
+    expect(findingIdentity(input).originId).not.toBe(identity.originId);
+    input.fixedVersion = null;
+    input.aliases[0]!.aliases.push("CVE-2020-1");
+    expect(findingIdentity(input).originId).not.toBe(identity.originId);
+  });
+
+  it("rejects ambiguous delimiters instead of sharing an origin", () => {
+    expect(() => findingIdentity(finding({ package: "a|b" }))).toThrow("identity component");
+  });
+});

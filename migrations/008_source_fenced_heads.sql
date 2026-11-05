@@ -1,0 +1,2 @@
+ALTER TABLE plugin_togetherweown_vuln_sentinel_4497ac2b8e.finding_records
+  ADD COLUMN source_poll_revision integer;
