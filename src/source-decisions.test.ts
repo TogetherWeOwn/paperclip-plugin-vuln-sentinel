@@ -396,6 +396,157 @@ describe("retained source decision orchestration", () => {
     expect((await routing.snapshot("company", configured.repo)).members).toHaveLength(1);
   });
 
+  describe("partial retained inventory", () => {
+    const cases = [
+      { format: "npm", path: "tools/package-lock.json", content: JSON.stringify({ lockfileVersion: 3, packages: {
+        "": {},
+        "node_modules/lost": { version: "1.0.0", resolved: "https://registry.npmjs.org/lost/-/lost-1.0.0.tgz" },
+        "node_modules/broken": { version: "v1.0.0", resolved: "https://registry.npmjs.org/broken/-/broken-1.0.0.tgz" },
+      } }) },
+      { format: "pnpm", path: "tools/pnpm-lock.yaml", content: `lockfileVersion: '9.0'
+importers: {'.': {}}
+packages:
+  lost@1.0.0: {resolution: {integrity: sha512-YQ==}}
+  broken@v1.0.0: {resolution: {integrity: sha512-YQ==}}
+snapshots: {lost@1.0.0: {}, broken@v1.0.0: {}}
+` },
+      { format: "cargo", path: "tools/Cargo.lock", content: `version = 4
+[[package]]
+name = "lost"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "${"a".repeat(64)}"
+[[package]]
+name = "broken"
+version = "v1.0.0"
+` },
+      { format: "unsupported", path: "tools/unknown.lock", content: sourceLockfiles().files[0]!.content },
+    ];
+
+    function lockfiles(files: Array<{ path: string; content: string }>) {
+      const value = sourceLockfiles();
+      value.files = files.map(({ path, content }) => ({ path, content, sha256: sha256(content), etag: null,
+        blobSha: createHash("sha1").update(`blob ${Buffer.byteLength(content)}\0`).update(content).digest("hex"),
+      }));
+      value.artifactDigest = `sha256:${sha256(canonicalJson([...value.files]
+        .sort((a, b) => a.path.localeCompare(b.path)).map(file => [file.path, file.sha256])))}`;
+      return value;
+    }
+
+    async function retain(files: ReturnType<typeof lockfiles>, osv: OsvSnapshot) {
+      const configuredSource = { repo: configured.repo, paths: files.files.map(file => file.path) };
+      const poll = await polls.begin("company", configuredSource);
+      const id = await sources.recordLockfiles("company", files);
+      await polls.complete(poll, id);
+      const selected = await polls.current("company", configuredSource);
+      const scan = await sources.recordOsv("company", id, rehash(osv));
+      return { selected, scanId: scan.snapshotId, threatId: await feed() };
+    }
+
+    it.each(cases.flatMap(fixture => [false, true].map(empty => ({ ...fixture, empty }))))(
+      "keeps omitted prior members unresolved and independent positives replayable: $format, empty=$empty",
+      async ({ format, path, content, empty }) => {
+        const complete = sourceLockfiles();
+        const raw = JSON.parse(complete.files[0]!.content);
+        raw.packages["node_modules/lost"] = { version: "1.0.0", resolved: "https://registry.npmjs.org/lost/-/lost-1.0.0.tgz" };
+        const firstOsv = snapshot();
+        const lost = parseOsvRecord({ ...firstOsv.records[0]!.raw, id: "GHSA-lost", affected: [{
+          package: { name: "lost", ecosystem: "npm" }, versions: ["1.0.0"],
+        }] }, "GHSA-lost");
+        firstOsv.records.push(lost);
+        firstOsv.observations.push({ dependency: { ecosystem: "npm", package: "lost", version: "1.0.0" }, advisoryIds: [lost.id] });
+        const first = await retain(lockfiles([{ path: "package-lock.json", content: JSON.stringify(raw) }]), firstOsv);
+        await observe(first);
+        const before = await routing.snapshot("company", configured.repo);
+        expect(before.members).toHaveLength(2);
+        const omitted = before.members.find(member => member.package === "lost")!;
+        expect(omitted).toBeDefined();
+        clock += 1;
+
+        const partial = lockfiles([complete.files[0]!, { path, content }]);
+        const e = await retain(partial, snapshot(empty));
+        const retainedBefore = await sources.readOsv("company", e.scanId);
+        const results = await Promise.all(Array.from({ length: 4 }, () => observe(e)));
+        for (const result of results) {
+          expect(result).toMatchObject({ status: "attention", lockfileSnapshotId: e.selected.snapshotId,
+            osvSnapshotId: e.scanId, threatSnapshotId: e.threatId,
+            counters: { dependencies: 1, observations: 1, decisions: empty ? 0 : 1, routingAttention: 0 },
+            inventory: { coverage: { configuredPathsParsed: false, repositoryDiscovery: "not_proven",
+              fullDependencyClosure: "not_proven", runtimeCompleteness: "not_proven" } } });
+          expect(result.attention).toContain("inventory_parse_attention");
+          expect(result.inventory.files.find(file => file.path === path)).toMatchObject({ format, status: "attention", entries: 0 });
+          expect(result.inventory.dependencies).toEqual([expect.objectContaining({ package: "lib", version: "1.2.3", scope: "unknown", direct: null })]);
+        }
+        const state = await routing.snapshot("company", configured.repo);
+        expect(state.members).toHaveLength(2);
+        expect(state.members.find(member => member.package === "lost")).toEqual(omitted);
+        expect(state.members.every(member => member.state === "unresolved")).toBe(true);
+        expect(state.rescanHolds).toBeUndefined();
+        if (empty) expect(state).toEqual(before);
+        else {
+          const member = state.members.find(member => member.package === "lib")!;
+          const stored = (await new DecisionJournal(db).latest("company", member.currentOriginId))!;
+          expect(stored.input_bundle).toMatchObject({ scope: "unknown", fixedVersion: null, compatibleFixVerified: false,
+            provenance: { artifactDigest: partial.artifactDigest, osvSnapshotId: e.scanId, threatSnapshotId: e.threatId,
+              sourceSelection: { token: e.selected.token, snapshotId: e.selected.snapshotId },
+              toolVersions: retainedBefore!.inventory.toolVersions } });
+          expect(stored.decision_bundle.applicability).toBe("unknown");
+          expect(stored.decision_bundle.proposedVex).toBeNull();
+          expect(decide(stored.input_bundle)).toEqual(stored.decision_bundle);
+        }
+        await observe(e);
+        expect(await routing.snapshot("company", configured.repo)).toEqual(state);
+        expect(await records("decision_records")).toHaveLength(empty ? 2 : 3);
+        expect(await records("finding_records")).toHaveLength(2);
+        expect(await records("card_claims")).toEqual([]);
+        expect(await sources.readOsv("company", e.scanId)).toEqual(retainedBefore);
+        expect((await sources.readLockfiles("company", e.selected.snapshotId))!.lockfiles).toEqual(partial);
+      },
+    );
+
+    it.each(cases)("keeps an all-attention $format source empty without certifying absence", async ({ path, content }) => {
+      const initial = await evidence();
+      await observe(initial);
+      const before = await routing.snapshot("company", configured.repo);
+      clock += 1;
+      const empty = snapshot(true);
+      empty.observations = [];
+      const e = await retain(lockfiles([{ path, content }]), empty);
+      const result = await observe(e);
+      expect(result).toMatchObject({ status: "attention", results: [], counters: { dependencies: 0, observations: 0, decisions: 0, routingAttention: 0 } });
+      expect(result.attention).toContain("inventory_parse_attention");
+      expect(result.inventory.files[0]).toMatchObject({ status: "attention", entries: 0 });
+      expect(await routing.snapshot("company", configured.repo)).toEqual(before);
+      expect(await records("decision_records")).toHaveLength(1);
+      expect(await records("card_claims")).toEqual([]);
+    });
+
+    it.each(cases)("binds changed unparsed $format bytes into distinct raw and decision provenance", async ({ path, content }) => {
+      const root = sourceLockfiles().files[0]!;
+      const first = await retain(lockfiles([root, { path, content }]), snapshot());
+      await observe(first);
+      const firstRaw = await sources.readOsv("company", first.scanId);
+      clock += 1;
+      const second = await retain(lockfiles([root, { path, content: `${content}\n` }]), snapshot());
+      await observe(second);
+      expect(second.selected.snapshotId).not.toBe(first.selected.snapshotId);
+      expect(second.scanId).not.toBe(first.scanId);
+      const secondRaw = (await sources.readOsv("company", second.scanId))!;
+      expect(secondRaw.inventory.dependencies).toEqual(firstRaw!.inventory.dependencies);
+      expect(secondRaw.inventory.artifactDigest).not.toBe(firstRaw!.inventory.artifactDigest);
+      expect(secondRaw.inventory.inventorySha256).not.toBe(firstRaw!.inventory.inventorySha256);
+      expect(await sources.readOsv("company", first.scanId)).toEqual(firstRaw);
+      const state = await routing.snapshot("company", configured.repo);
+      expect(state.members).toHaveLength(1);
+      expect(state.containers).toHaveLength(1);
+      const stored = (await new DecisionJournal(db).latest("company", state.members[0]!.currentOriginId))!;
+      expect(stored.input_bundle.provenance).toMatchObject({ artifactDigest: secondRaw.inventory.artifactDigest,
+        osvSnapshotId: second.scanId, sourceSelection: { snapshotId: second.selected.snapshotId } });
+      expect(await records("decision_records")).toHaveLength(2);
+      expect(await records("card_claims")).toEqual([]);
+    });
+  });
+
   it.each([false, true])("supersession during retained feed read prevents writes, even empty=%s", async empty => {
     const e = await evidence(empty);
     let raced = false;
