@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group: {}
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    uses: TogetherWeOwn/.github/.github/workflows/changes.yml@773ee91a904b9e1b65eddaaad4400d36e05fa717
+    with:
+      areas-json: '{"library":["src/**","migrations/**","scripts/**"],"docs":["*.md","docs/**"]}'
+      full-run-globs-json: '["package.json","**/package.json","package-lock.json","**/package-lock.json","npm-shrinkwrap.json","**/npm-shrinkwrap.json","tsconfig*.json","**/tsconfig*.json","vitest.config.*",".npmrc","**/.npmrc",".github/**"]'
+      docs-areas-json: '["docs"]'
+
+  library:
+    needs: changes
+    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && (needs.changes.outputs.full_run == 'true' || fromJSON(needs.changes.outputs.areas).library))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.21.0"
+          cache: npm
+      - name: Verify native install safeguards
+        run: |
+          node --input-type=module -e '
+            import { execFileSync } from "node:child_process";
+            const [major, minor] = execFileSync("npm", ["--version"], { encoding: "utf8" }).trim().split(".").map(Number);
+            if (!(major > 11 || (major === 11 && minor >= 19))) throw new Error("npm 11.19+ required for release-age filtering");
+          '
+          test "$(npm config get min-release-age)" = 3
+          test "$(npm config get ignore-scripts)" = true
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - name: Verify immutable tracked inputs
+        run: git diff --exit-code && git diff --check
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Checksum-pinned workflow and secret checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/actionlint" "$RUNNER_TEMP/zizmor" "$RUNNER_TEMP/gitleaks"
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/actionlint/archive.tgz" https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          printf '%s  %s\n' 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 "$RUNNER_TEMP/actionlint/archive.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint/archive.tgz" -C "$RUNNER_TEMP/actionlint" actionlint
+          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck= -pyflakes=
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/zizmor/archive.tgz" https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b "$RUNNER_TEMP/zizmor/archive.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/zizmor/archive.tgz" -C "$RUNNER_TEMP/zizmor" zizmor
+          env -u GH_TOKEN -u GITHUB_TOKEN "$RUNNER_TEMP/zizmor/zizmor" --offline --no-progress .github/workflows
+          curl -fsSL --retry 2 -o "$RUNNER_TEMP/gitleaks/archive.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          printf '%s  %s\n' 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb "$RUNNER_TEMP/gitleaks/archive.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks/archive.tgz" -C "$RUNNER_TEMP/gitleaks" gitleaks
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --redact --no-banner .
+
+  ci-ok:
+    needs: [changes, library, security]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful or intentionally skipped jobs
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {name: job["result"] for name, job in needs.items()
+                 if job["result"] not in ("success", "skipped")}
+          if bad:
+              print(f"Failing jobs: {bad}")
+              sys.exit(1)
+          print("ci-ok: all jobs succeeded or were intentionally skipped")
+          PY

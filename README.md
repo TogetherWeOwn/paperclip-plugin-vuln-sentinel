@@ -5,6 +5,10 @@ Deterministic vulnerability matching and report-only triage for Paperclip.
 ## Implementation status
 
 **Core implementation only; not an installable plugin or an enabled pilot yet.**
+See the [source-only delivery inventory and evidence/gap matrix](docs/SOURCE-DELIVERY.md)
+for the exact checkpoint, public export surface, finite delivery delta and unchanged
+runtime/authority/pilot exclusions. All twelve authority acceptance groups remain
+NOT RUN; source delivery does not complete the original installation/pilot acceptance.
 There is deliberately no worker/manifest entrypoint. Nothing schedules scans,
 contacts an advisory provider, mutates a repository, or creates live issues just
 by importing this package or running its tests. Explicit read-only source adapters
@@ -563,7 +567,10 @@ adds no trusted receipt, policy input, runtime endpoint or publication authority
 
 ## Development
 
-Node 24 or later:
+Node 24 or later with npm 11.19 or later (CI pins Node 24.21.0 / npm 11.19.0).
+The project `.npmrc` refuses lifecycle scripts and applies a three-day native
+release-age policy; no exemptions are configured. A frozen install is not a
+retrospective age/provenance audit of the existing lockfile.
 
 ```sh
 npm ci --ignore-scripts
