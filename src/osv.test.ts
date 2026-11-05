@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { decide } from "./matcher.js";
 import { canonicalJson, sha256 } from "./identity.js";
-import { OsvSource, osvFindingInputs, parseOsvRecord, type OsvDependency } from "./osv.js";
+import { OsvSource, osvFindingInputs, parseOsvRecord, type OsvDependency, type OsvSnapshot } from "./osv.js";
 import { sourceBudget, sourceRequest, timestamp, type SourceFetch } from "./source-http.js";
 import type { OsvRange } from "./ranges.js";
 
@@ -367,6 +367,89 @@ describe("recursive OSV alias/upstream hydration", () => {
     result.snapshotSha256 = sha256(canonicalJson(content));
     expect(() => osvFindingInputs(result, context)).toThrow("Source requires attention");
   });
+});
+
+describe("retained OSV applicability and provenance consistency", () => {
+  const states = ["affected", "outside", "unknown", "withdrawn", "unavailable"] as const;
+  type State = typeof states[number];
+  const pairs = states.flatMap(left => states.flatMap(right =>
+    left === "unavailable" && right === "unavailable" ? [] : [{ left, right }]));
+
+  function retained(left: State, right: State): OsvSnapshot {
+    const entries = [left, right].map((state, index) => {
+      const id = index === 0 ? "GHSA-a" : "GHSA-b";
+      const raw = { ...advisory(id), aliases: [index === 0 ? "GHSA-b" : "GHSA-a"],
+        modified: index === 0 ? modified : "2026-11-03T01:00:00.000Z",
+        ...(state === "withdrawn" ? { withdrawn: modified } : {}),
+        affected: state === "unknown" ? [] : state === "outside"
+          ? [{ ...advisory().affected[0]!, ranges: [], versions: ["0.5.0"] }] : advisory().affected,
+      };
+      return { state, record: parseOsvRecord(raw, id) };
+    });
+    const records = entries.filter(row => row.state !== "unavailable").map(row => row.record);
+    const content = { queriedAt: observedAt, records,
+      observations: [{ dependency: dep, advisoryIds: records.map(row => row.id) }],
+      unavailableIds: entries.filter(row => row.state === "unavailable").map(row => row.record.id),
+    };
+    return { ...content, snapshotSha256: sha256(canonicalJson(content)) };
+  }
+
+  it.each(pairs)("reduces $left / $right independently of record and query-root order", ({ left, right }) => {
+    const original = retained(left, right);
+    const active = [left, right].filter(state => state !== "withdrawn");
+    const status = active.includes("affected") ? "affected"
+      : active.length && active.every(state => state === "outside") ? "outside" : "unknown";
+    const dropped = active.length === 0 || status === "outside";
+    for (const reverse of [false, true]) {
+      for (const roots of [original.records.map(row => row.id), [original.records.at(-1)!.id]]) {
+        const result = structuredClone(original);
+        if (reverse) result.records.reverse();
+        result.observations[0]!.advisoryIds = reverse ? [...roots].reverse() : roots;
+        const { snapshotSha256: _, ...content } = result;
+        result.snapshotSha256 = sha256(canonicalJson(content));
+        const before = structuredClone(result);
+        const inputs = osvFindingInputs(result, context);
+        expect(inputs).toHaveLength(1);
+        const input = inputs[0]!;
+        expect(input.versionEvidence).toMatchObject({ status, complete: status !== "unknown",
+          artifactDigest: context.artifactDigest, advisoryId: input.advisoryId,
+          advisoryModified: input.aliases.find(row => row.id === input.advisoryId)!.modified,
+        });
+        expect(input.provenance.source).toEqual({ kind: "osv", queriedAt: observedAt,
+          snapshotSha256: result.snapshotSha256 });
+        expect(input.fixedVersion).toBeNull();
+        expect(input.compatibleFixVerified).toBe(false);
+        expect(input.scope).toBe("unknown");
+        expect(input.aliases.map(row => row.id).sort()).toEqual(["GHSA-a", "GHSA-b"]);
+        const decision = decide(input);
+        expect(decision).toMatchObject({ applicability: dropped ? "dropped" : "unknown",
+          matchedRule: dropped ? 1 : 8, proposedVex: null, proposedRemediation: null });
+        expect(decision.identity.aliasGroup).toBe("GHSA-a");
+        expect(osvFindingInputs(result, context)).toEqual(inputs);
+        expect(result).toEqual(before);
+      }
+    }
+  });
+
+  it.each(["affected", "severity", "modified", "withdrawn", "aliases", "upstream", "rawSha256", "raw"] as const)(
+    "rejects rehashed parsed/raw %s disagreement before producing matcher inputs", field => {
+      const result = retained("affected", "outside");
+      const record = result.records[0]!;
+      if (field === "affected") record.affected = [];
+      if (field === "severity") record.severity = "low";
+      if (field === "modified") record.modified = "2026-11-03T02:00:00.000Z";
+      if (field === "withdrawn") record.withdrawn = modified;
+      if (field === "aliases") record.aliases = [];
+      if (field === "upstream") record.upstream = ["GHSA-b"];
+      if (field === "rawSha256") record.rawSha256 = "0".repeat(64);
+      if (field === "raw") record.raw.details = "changed retained raw text";
+      const { snapshotSha256: _, ...content } = result;
+      result.snapshotSha256 = sha256(canonicalJson(content));
+      const before = structuredClone(result);
+      expect(() => osvFindingInputs(result, context)).toThrow("osv_raw_record_mismatch");
+      expect(result).toEqual(before);
+    },
+  );
 });
 
 describe("source HTTP containment", () => {
