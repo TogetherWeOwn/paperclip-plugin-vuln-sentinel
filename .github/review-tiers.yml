@@ -17,11 +17,11 @@
 version: 1
 default_tier: sensitive
 tiers:
-  low:
-    # Prose only; content overrides still apply.
-    - README.md
+  low: []
   ordinary: []
   sensitive:
+    # The README defines security and evidence contracts, not just prose.
+    - README.md
     # Review policy, workflow, ownership and ruleset configuration.
     - .github/**
     - CODEOWNERS
