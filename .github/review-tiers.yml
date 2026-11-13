@@ -1,0 +1,49 @@
+# Highest changed-file tier wins: sensitive > ordinary > low. Sensitive wins
+# overlaps; unmatched and new paths default to sensitive. This map is always
+# sensitive. Every change gets QA; sensitive, unclassified or escalated changes
+# get Security -> QA. QA verifies the author's tier against the diff.
+#
+# Content always escalates to sensitive regardless of path: new or changed
+# public endpoints or input parsing; auth, authz or sessions; crypto or key
+# handling; secrets or credentials; permission checks; tenant isolation or
+# personal data; SQL, schema or migrations; dependencies and lockfiles
+# including dev dependencies; CI or workflows; weakened assertions, deleted
+# tests or snapshots, or lowered test gates. Low test globs, if added, apply
+# only to additive tests and never exempt test weakening.
+#
+# Ordinary paths require an audited module justification: no untrusted input,
+# sensitive output, permissions, persistence or trust-boundary effect. Moving a
+# sensitive-floor glob down requires explicit Security approval on that PR.
+version: 1
+default_tier: sensitive
+tiers:
+  low: []
+  ordinary: []
+  sensitive:
+    # The README defines security and evidence contracts, not just prose.
+    - README.md
+    # Review policy, workflow, ownership and ruleset configuration.
+    - .github/**
+    - CODEOWNERS
+    - rulesets/**
+    # Dependencies, installation, build and test configuration.
+    - package.json
+    - package-lock.json
+    - .npmrc
+    - tsconfig*.json
+    - vitest.config.ts
+    - Makefile
+    - Dockerfile*
+    - scripts/**
+    # Runtime, input, network, persistence and publication code.
+    - src/**
+    - migrations/**
+    - docs/SOURCE-DELIVERY.md
+    - infra/**
+    - deploy/**
+    - release/**
+    # Agent instructions, skills and tool permissions.
+    - AGENTS.md
+    - '**/AGENTS.md'
+    - .claude/**
+    - '**/skills/**'
